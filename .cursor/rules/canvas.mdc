@@ -1,0 +1,66 @@
+---
+description: Canvas chart rules for toggleable legend series
+alwaysApply: false
+---
+# Canvas rules
+
+Also read the canvas skill at `~/.cursor/skills-cursor/canvas/SKILL.md`.
+
+## Toggleable chart series
+
+Any `LineChart` or `BarChart` with **two or more series** must let the user
+click legend keys to show or hide individual curves/bars.
+
+The built-in chart legend is not clickable. Implement an interactive legend
+above the chart instead.
+
+### Requirements
+
+- Render a clickable legend row (`Pill` per series name) directly above the chart.
+- Clicking a legend key toggles that series on or off.
+- `active` pill = series visible; inactive pill = series hidden.
+- Persist visibility with `useCanvasState` and a stable per-chart key
+  (e.g. `legend-held-out-placement`).
+- Do not allow hiding the last visible series — at least one must stay on.
+- Keep the full series list in the legend even when a series is hidden, so the
+  user can turn it back on.
+- Pass only visible series into `LineChart` / `BarChart`.
+- Mention in the chart caption that legend keys are clickable.
+
+### Implementation pattern
+
+Define series once as a `ChartSeries[]`, then wrap the chart:
+
+```tsx
+function useSeriesVisibility(chartKey: string, series: ChartSeries[]) {
+  const [visibility, setVisibility] = useCanvasState<Record<string, boolean>>(
+    `legend-${chartKey}`,
+    Object.fromEntries(series.map((item) => [item.name, true])),
+  );
+
+  const toggleSeries = (name: string) => {
+    setVisibility((previous) => {
+      const isVisible = previous[name] !== false;
+      const visibleCount = series.filter((item) => previous[item.name] !== false).length;
+      if (isVisible && visibleCount <= 1) {
+        return previous;
+      }
+      return { ...previous, [name]: !isVisible };
+    });
+  };
+
+  const filteredSeries = series.filter((item) => visibility[item.name] !== false);
+  return { visibility, toggleSeries, filteredSeries };
+}
+```
+
+Legend pills should reuse each series' `tone` where possible. Map chart
+`tone="danger"` to pill `tone="deleted"` (`PillTone` has no `danger`).
+
+Reuse the same helper pattern across charts in a canvas rather than
+duplicating toggle logic inline.
+
+### When this does not apply
+
+- Single-series charts (no legend needed).
+- `PieChart` slices (different interaction model).
