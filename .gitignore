@@ -1,0 +1,13 @@
+.venv/
+notes/
+canvas/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+.env
+.DS_Store
