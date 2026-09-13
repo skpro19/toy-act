@@ -1,6 +1,7 @@
 .venv/
 notes/
 canvas/
+docs/
 
 __pycache__/
 *.py[cod]
