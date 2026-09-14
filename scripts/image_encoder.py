@@ -5,7 +5,7 @@
 
 import torch
 from torch import nn
-from scripts.config import D_MODEL
+from scripts.config import D_MODEL, NUM_IMG_TOKENS
 
 class ImageEncoder(nn.Module): 
 
@@ -38,6 +38,10 @@ class ImageEncoder(nn.Module):
         # print(f"x.shape => {x.shape}")
 
         B,C,H,W = x.shape
+        if H * W != NUM_IMG_TOKENS:
+            raise ValueError(f"H*W != NUM_IMG_TOKENS {H*W} != {NUM_IMG_TOKENS}")
+
+
         x = x.permute(0,2,3,1).reshape(B, H*W, C)
 
         # 128 -> d_model
