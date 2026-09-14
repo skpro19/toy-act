@@ -12,3 +12,4 @@ N_HEAD = 4
 
 
 ## Transformer Decoder
+ACTION_CHUNK_SIZE = 10
