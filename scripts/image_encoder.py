@@ -3,13 +3,16 @@
 - assume single camera setup 
 """
 
+from typing import Tuple
+
 import torch
 from torch import nn
-from scripts.config import D_MODEL, NUM_IMG_TOKENS
+from scripts.config import D_MODEL, IMG_DIMS, NUM_IMG_TOKENS
+from scripts.embeddings import get_se
 
 class ImageEncoder(nn.Module): 
 
-    def __init__(self, d_model:int = D_MODEL): 
+    def __init__(self, d_model: int = D_MODEL):
         super().__init__()
 
         self.d_model = d_model
@@ -38,13 +41,19 @@ class ImageEncoder(nn.Module):
         # print(f"x.shape => {x.shape}")
 
         B,C,H,W = x.shape
-        if H * W != NUM_IMG_TOKENS:
-            raise ValueError(f"H*W != NUM_IMG_TOKENS {H*W} != {NUM_IMG_TOKENS}")
+        # if H * W != NUM_IMG_TOKENS:
+        #     raise ValueError(f"H*W != NUM_IMG_TOKENS {H*W} != {NUM_IMG_TOKENS}")
 
 
         x = x.permute(0,2,3,1).reshape(B, H*W, C)
 
         # 128 -> d_model
         x = self.project(x)
+
+        # print(f"x.shape => {x.shape}")
+
+        x = get_se(x)
+
+        # print(f"x.shape => {x.shape}")
 
         return x
