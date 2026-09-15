@@ -40,6 +40,8 @@ class ACTV1(nn.Module):
 
         self.decoder_tgt = nn.Parameter(torch.randn(self.k, self.d_model))
 
+        self.action_head = nn.Linear(self.d_model, self.proprio_dims)
+
     def forward(self, img_tensor: torch.Tensor, proprio_tensor: torch.Tensor):
         
         img_tokens = self.img_encoder(img_tensor) # (B, NUM_IMG_TOKENS, D_MODEL)
@@ -55,7 +57,10 @@ class ACTV1(nn.Module):
         decoder_tgt = self.decoder_tgt.unsqueeze(0).expand(B, -1, -1)
 
         # decoder => predict action chunks
-        actions = self.decoder(memory=memory, tgt=decoder_tgt)
+        decoded_actions = self.decoder(memory=memory, tgt=decoder_tgt)
+
+        actions = self.action_head(decoded_actions)
+
         return actions
         
 
