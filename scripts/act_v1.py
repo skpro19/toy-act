@@ -1,16 +1,19 @@
 import torch 
 from torch import nn
 
-from transformer_encoder import TransformerEncoder 
-from transformer_decoder import TransformerDecoder
+from scripts.transformer_encoder import TransformerEncoder
+from scripts.transformer_decoder import TransformerDecoder
+from scripts.image_encoder import ImageEncoder
+from scripts.proprio_encoder import ProprioEncoder
 
-from config import (
+from scripts.config import (
     D_MODEL, 
     NUM_IMG_TOKENS, 
     NUM_PROPRIO_TOKENS, 
     N_HEAD,
     NUM_LAYERS, 
-    ACTION_CHUNK_SIZE
+    ACTION_CHUNK_SIZE,
+    PROPRIO_DIMS
 )
 
 class ACTV1(nn.Module):
@@ -19,16 +22,19 @@ class ACTV1(nn.Module):
                 d_model:int = D_MODEL, 
                 nhead:int = N_HEAD, 
                 num_layers:int = NUM_LAYERS,
-                action_chunk_size:int = ACTION_CHUNK_SIZE): 
+                action_chunk_size:int = ACTION_CHUNK_SIZE,
+                proprio_dims:int = PROPRIO_DIMS):
+
+        super().__init__()
         
         self.d_model = d_model
         self.nhead = nhead
         self.num_layers = num_layers
         self.k = action_chunk_size
-        
+        self.proprio_dims = proprio_dims
 
-        self.img_encoder = nn.Module()
-        self.proprio_encoder = nn.Module()
+        self.img_encoder = ImageEncoder(d_model=self.d_model)
+        self.proprio_encoder = ProprioEncoder(d_model=self.d_model, proprio_dims=self.proprio_dims)
         self.encoder = TransformerEncoder(d_model=self.d_model, nhead=self.nhead, num_layers=self.num_layers)
         self.decoder = TransformerDecoder(d_model=self.d_model, nhead=self.nhead, num_layers=self.num_layers)
 
@@ -45,9 +51,11 @@ class ACTV1(nn.Module):
         # encoder => mix image + proprio tokens
         memory = self.encoder(src=img_proprio_tokens)
 
+        B, _, _ = memory.shape
+        decoder_tgt = self.decoder_tgt.unsqueeze(0).expand(B, -1, -1)
+
         # decoder => predict action chunks
-        actions = self.decoder(memory=memory, tgt=self.decoder_tgt)
+        actions = self.decoder(memory=memory, tgt=decoder_tgt)
         return actions
         
-
 

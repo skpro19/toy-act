@@ -7,7 +7,7 @@ DETR-style — not BERT (no [CLS] token here).
 
 from torch import nn
 import torch
-from config import D_MODEL, N_HEAD, NUM_LAYERS
+from scripts.config import D_MODEL, N_HEAD, NUM_LAYERS
 
 class TransformerDecoder(nn.Module):
 
