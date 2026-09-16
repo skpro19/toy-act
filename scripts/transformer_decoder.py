@@ -1,7 +1,7 @@
 """
 Policy action-chunk transformer (Figure 2 RIGHT, inner decoder).
 
-Cross-attention from k learned query slots to the observation encoder output.
+Cross-attention from k fixed query slots to the observation encoder output.
 DETR-style — not BERT (no [CLS] token here).
 """
 
