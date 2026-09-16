@@ -8,7 +8,7 @@ from typing import Tuple
 import torch
 from torch import nn
 from scripts.config import D_MODEL, IMG_DIMS, NUM_IMG_TOKENS
-from scripts.embeddings import get_se
+from scripts.embeddings import  get_se_2D
 
 class ImageEncoder(nn.Module): 
 
@@ -41,19 +41,22 @@ class ImageEncoder(nn.Module):
         # print(f"x.shape => {x.shape}")
 
         B,C,H,W = x.shape
-        # if H * W != NUM_IMG_TOKENS:
-        #     raise ValueError(f"H*W != NUM_IMG_TOKENS {H*W} != {NUM_IMG_TOKENS}")
 
+        x = x.permute(0,2,3,1)
 
-        x = x.permute(0,2,3,1).reshape(B, H*W, C)
+        print(f"[permute] x.shape => {x.shape}")
 
-        # 128 -> d_model
+        # [C =>  d_model] projection
         x = self.project(x)
 
-        # print(f"x.shape => {x.shape}")
+        print(f"[project] x.shape => {x.shape}")
 
-        x = get_se(x)
+        # enrich x with 2D positional sinusodial embeddings         
+        x = get_se_2D(x)
+        print(f"x.shape => {x.shape}")
 
-        # print(f"x.shape => {x.shape}")
+        # 2D => 1D tokens
+        x = x.reshape(B, H * W, self.d_model)
+        print(f"x.shape => {x.shape}")
 
         return x

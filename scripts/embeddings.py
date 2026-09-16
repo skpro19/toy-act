@@ -3,15 +3,10 @@ import torch
 from scripts.config import D_MODEL
 
 
-def get_se(x: torch.Tensor):
-    """ Add fixed sinusodial embeddings to the input tensor """
+def get_se_1D(x: torch.Tensor):
+    """ Add fixed 1D sinusodial embeddings to the input tensor """
     B, S, C = x.shape
     BASE = 1e4
-
-    # print(f"(B,S,C) => {B,S,C}")
-
-    # PE(pos, 2i)   = sin(pos / 10000^(2i/d))
-    # PE(pos, 2i+1) = cos(pos / 10000^(2i/d))
 
     # (2i / d)
     freq_scales = torch.arange(0, C, 2, dtype=torch.float32) / C
@@ -38,7 +33,7 @@ def get_se(x: torch.Tensor):
     PE[:, 1::2] = cos_E
 
     # print(f"PE.shape => {PE.shape}")
-    PE = PE.unsqueeze(0).expand(B, -1, -1)
+    PE = PE.unsqueeze(0).expand(B, -1, -1).to(device=x.device, dtype=x.dtype)
 
     # print(f"PE.shape => {PE.shape}")
 
@@ -46,12 +41,27 @@ def get_se(x: torch.Tensor):
 
     return x
 
+def get_se_2D(x: torch.Tensor):
+    """ Add fixed 2D sinusodial embeddings to the input tensor """
+    B, H, W, C = x.shape
+    BASE = 1e4
 
-# class SinusodialEmbeddings:
-#     def __init__(self, input: torch.Tensor):
-#         self.x = input
+    x_rows = torch.zeros(1, H, C // 2)
+    x_cols = torch.zeros(1, W, C // 2)
+    
+    re = get_se_1D(x_rows) 
+    ce = get_se_1D(x_cols)
 
-#         B, S, C = self.x.shape # (batch_size, num_tokens, token_dims)
-#         self.pe = torch.zeros(S, C)
+    print(f"re.shape => {re.shape}")
+    print(f"ce.shape => {ce.shape}")
+    
+    re = re.expand(W, -1, -1).permute(1,0,2)
+    ce = ce.expand(H, -1, -1)
 
-#     def get_embeddings(self):
+    PE_2D = torch.concat([re, ce], dim=2)
+    PE_2D = PE_2D.unsqueeze(0).expand(B, -1, -1, -1).to(device=x.device, dtype=x.dtype)
+    
+    print(f"PE_2D.shape => {PE_2D.shape}")
+
+    x = x + PE_2D
+    return x 

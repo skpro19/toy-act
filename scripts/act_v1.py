@@ -5,6 +5,7 @@ from scripts.transformer_encoder import TransformerEncoder
 from scripts.transformer_decoder import TransformerDecoder
 from scripts.image_encoder import ImageEncoder
 from scripts.proprio_encoder import ProprioEncoder
+from scripts.embeddings import get_se_1D
 
 from scripts.config import (
     D_MODEL, 
@@ -38,7 +39,8 @@ class ACTV1(nn.Module):
         self.encoder = TransformerEncoder(d_model=self.d_model, nhead=self.nhead, num_layers=self.num_layers)
         self.decoder = TransformerDecoder(d_model=self.d_model, nhead=self.nhead, num_layers=self.num_layers)
 
-        self.decoder_tgt = nn.Parameter(torch.randn(self.k, self.d_model))
+        # self.decoder_tgt = nn.Parameter(torch.randn(self.k, self.d_model))
+        # self.decoder_tgt = get_se(x = torch.zeros(1, self.k, self.d_model))
 
         self.action_head = nn.Linear(self.d_model, self.proprio_dims)
 
@@ -54,7 +56,10 @@ class ACTV1(nn.Module):
         memory = self.encoder(src=img_proprio_tokens)
 
         B, _, _ = memory.shape
-        decoder_tgt = self.decoder_tgt.unsqueeze(0).expand(B, -1, -1)
+        decoder_tgt = get_se_1D(torch.zeros(B, self.k, self.d_model, dtype=memory.dtype, device=memory.device))
+
+        # print(f"decoder_tgt.shape => {decoder_tgt.shape}")
+        # decoder_tgt = decoder_tgt.unsqueeze(0).expand(B, -1, -1)
 
         # decoder => predict action chunks
         decoded_actions = self.decoder(memory=memory, tgt=decoder_tgt)
