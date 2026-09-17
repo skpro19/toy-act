@@ -13,4 +13,8 @@ __pycache__/
 .env
 .DS_Store
 
+datasets/
+third_party/
+replays/
+
 ISSUES.md
