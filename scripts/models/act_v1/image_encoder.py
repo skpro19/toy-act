@@ -7,8 +7,8 @@ from typing import Tuple
 
 import torch
 from torch import nn
-from scripts.config import D_MODEL, IMG_DIMS, NUM_IMG_TOKENS
-from scripts.embeddings import  get_se_2D
+from scripts.models.act_v1.config import D_MODEL, IMG_DIMS, NUM_IMG_TOKENS
+from scripts.models.act_v1.embeddings import get_se_2D
 
 class ImageEncoder(nn.Module): 
 

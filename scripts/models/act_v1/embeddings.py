@@ -1,6 +1,6 @@
 import torch
 
-from scripts.config import D_MODEL
+from scripts.models.act_v1.config import D_MODEL
 
 
 def get_se_1D(x: torch.Tensor):
@@ -64,4 +64,4 @@ def get_se_2D(x: torch.Tensor):
     print(f"PE_2D.shape => {PE_2D.shape}")
 
     x = x + PE_2D
-    return x 
+    return x

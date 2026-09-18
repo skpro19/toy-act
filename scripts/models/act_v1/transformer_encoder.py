@@ -3,7 +3,7 @@
 from torch import nn
 import torch
 
-from scripts.config import D_MODEL, N_HEAD, NUM_LAYERS
+from scripts.models.act_v1.config import D_MODEL, N_HEAD, NUM_LAYERS
 
 class TransformerEncoder(nn.Module):
 

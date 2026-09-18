@@ -1,13 +1,13 @@
 import torch 
 from torch import nn
 
-from scripts.transformer_encoder import TransformerEncoder
-from scripts.transformer_decoder import TransformerDecoder
-from scripts.image_encoder import ImageEncoder
-from scripts.proprio_encoder import ProprioEncoder
-from scripts.embeddings import get_se_1D
+from scripts.models.act_v1.transformer_encoder import TransformerEncoder
+from scripts.models.act_v1.transformer_decoder import TransformerDecoder
+from scripts.models.act_v1.image_encoder import ImageEncoder
+from scripts.models.act_v1.proprio_encoder import ProprioEncoder
+from scripts.models.act_v1.embeddings import get_se_1D
 
-from scripts.config import (
+from scripts.models.act_v1.config import (
     D_MODEL, 
     NUM_IMG_TOKENS, 
     NUM_PROPRIO_TOKENS, 
@@ -68,4 +68,3 @@ class ACTV1(nn.Module):
 
         return actions
         
-

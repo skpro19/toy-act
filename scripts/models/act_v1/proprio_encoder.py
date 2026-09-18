@@ -2,7 +2,7 @@
 
 from torch import nn 
 import torch 
-from scripts.config import D_MODEL, PROPRIO_DIMS
+from scripts.models.act_v1.config import D_MODEL, PROPRIO_DIMS
 
 class ProprioEncoder(nn.Module): 
 
