@@ -16,6 +16,7 @@ dependencies = [
 
 [dependency-groups]
 train = [
+    "boto3>=1.43.98",
     "h5py>=3.16.0",
     "tensorboard>=2.21.0",
     "torch==2.10.0",
