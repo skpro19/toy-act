@@ -12,7 +12,9 @@ instead of copying it from the local machine.
 The instance follows the `flywheel-4090` pattern: a durable runner owns the
 training process, a separate backup wrapper synchronizes run-scoped checkpoints
 and TensorBoard runs to S3, and TensorBoard is reachable from the local machine
-through an SSH port-forward.
+through an SSH port-forward. The interactive agent is only responsible for
+provisioning and handoff; a detached local watcher owns the run to completion,
+including cleanup.
 
 ## Fixed configuration
 
@@ -74,9 +76,11 @@ through an SSH port-forward.
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
    and label. Reconcile the instance by exact label after every create attempt;
    do not rely only on parsing create-command output.
-7. Once an instance ID exists, install an EXIT trap that destroys that exact
-   instance and verifies it no longer appears in `vastai show instances --raw`.
-   The trap must run on both success and failure.
+7. Once an instance ID exists, the detached watcher described in step 17 owns an
+   EXIT trap that destroys that exact instance and verifies it no longer appears
+   in `vastai show instances --raw`. The trap must run on both success and
+   failure. Do not install the trap in the interactive agent shell: returning
+   from the agent must not destroy the running instance.
 8. Wait up to ten minutes for `vastai ssh-url INSTANCE_ID` and successful SSH.
    Use a command-specific temporary `known_hosts` file populated by
    `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, rsync, and
@@ -164,20 +168,37 @@ through an SSH port-forward.
     appears or `ckpt-bkp` exits. The wrapper discovers the single run directory,
     then synchronizes `checkpoints/act_v1/<run>` and `runs/act_v1/<run>` to S3
     every 120 seconds using `scripts/s3_backup.py`.
-17. Monitor every 30 seconds:
-    - `state/completed` means training succeeded;
-    - `state/failed` means training failed and must be reported;
-    - a stopped `train` session without a terminal state is a failure;
+17. Hand off to a detached local watcher and stop babysitting. Launch the
+    watcher with `setsid`/`nohup` so it survives the interactive agent returning,
+    and make the watcher own the step-7 EXIT trap and the local `VAST_API_KEY`.
+    The watcher must:
+    - poll every 30 seconds, retrying transient SSH failures, and treat a
+      stopped `train` session without a terminal state as a failure;
+    - treat `state/completed` as success and `state/failed` as a reported
+      failure;
     - show concise progress from `.vast-train/logs/training.log` without
-      flooding the user; retry transient SSH failures.
-18. On success, wait for `state/backup-final-succeeded`, read the run name from
-    `state/run-name`, then verify locally through the workload profile that S3
-    contains `last.pt` and every expected periodic snapshot for the current
-    `CHECKPOINT_EVERY` and `EPOCHS` values.
-19. Always destroy the instance through the EXIT trap. Report the run name,
-    S3 URI, elapsed time, selected offer price, pinned commit, TensorBoard URL,
-    and final cleanup status.
+      flooding;
+    - on success, wait for `state/backup-final-succeeded`, read the run name from
+      `state/run-name`, then verify locally through the workload profile that S3
+      contains `last.pt` and every expected periodic snapshot for the current
+      `CHECKPOINT_EVERY` and `EPOCHS` values;
+    - always destroy the instance through the EXIT trap and verify it no longer
+      appears in `vastai show instances --raw`;
+    - write a report file recording the run name, S3 URI, elapsed time, selected
+      offer price, pinned commit, TensorBoard URL, and final cleanup status.
+18. Report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
+    URL, and the watcher log/report path to the user, then return without
+    blocking on the training run. Do not keep polling training progress in the
+    interactive session.
 
-If setup or training fails, wait briefly for the backup wrapper's best-effort
-final sync, preserve already uploaded checkpoints, report the failure and S3
-prefix, and still destroy the instance.
+If setup fails, destroy the instance through the watcher trap (or directly when
+no watcher was started yet) and report the failure. If training fails, the
+watcher waits briefly for the backup wrapper's best-effort final sync, preserves
+already uploaded checkpoints, reports the failure and S3 prefix, and still
+destroys the instance.
+
+Because `VAST_API_KEY` is deliberately never placed on the instance, the
+instance cannot clean itself up. If the local machine sleeps, reboots, or the
+watcher is hard-killed, cleanup cannot run and the instance will leak; in that
+case check `vastai show instances --raw` and destroy the labeled instance
+manually.
