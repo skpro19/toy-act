@@ -12,7 +12,7 @@ working tree, including uncommitted files. Do not clone the Git repository.
 | Setting | Value |
 |---|---|
 | GPU | One full RTX 4090 |
-| Maximum price | $0.60/hour |
+| Maximum price | $0.80/hour |
 | Image | `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` |
 | Disk | 100 GB |
 | AWS profile | `toy-pickplace-backup` |
@@ -35,11 +35,16 @@ working tree, including uncommitted files. Do not clone the Git repository.
 
    ```bash
    vastai search offers \
-     'gpu_name=RTX_4090 gpu_frac=1 num_gpus=1 gpu_ram>=24 compute_cap>=890 cpu_cores_effective>=8 cpu_ram>=32 inet_down>=200 inet_up>=100 reliability>=0.98 rentable=true verification=verified gpu_display_active=false' \
+     'gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24 compute_cap>=890 cpu_cores_effective>=8 cpu_ram>=32 inet_down>=200 inet_up>=100 reliability>=0.98 rentable=true verification=verified gpu_display_active=false' \
      --order dph_total+ --raw
    ```
 
-4. Keep offers at or below `$0.60/hour`, reject EPYC 7001/7002, and rank by
+   Do not add `gpu_frac=1`. Vast.ai defines `gpu_frac` as GPUs in the offer
+   divided by GPUs in the host, so it rejects a full single 4090 on a multi-GPU
+   host. `num_gpus=1` together with `gpu_ram>=24` already guarantees one full
+   GPU.
+
+4. Keep offers at or below `$0.80/hour`, reject EPYC 7001/7002, and rank by
    CPU family (EPYC 9005, EPYC 9004, Threadripper 7000, EPYC 7003, modern
    Ryzen 7000/9000), then price, disk bandwidth, and reliability. Automatically
    try up to the best three offers in order. Never weaken a filter without
