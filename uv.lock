@@ -2369,6 +2369,14 @@ dependencies = [
     { name = "torch" },
 ]
 
+[package.dev-dependencies]
+train = [
+    { name = "h5py" },
+    { name = "tensorboard" },
+    { name = "torch" },
+    { name = "tqdm" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "h5py", specifier = ">=3.16.0" },
@@ -2378,6 +2386,14 @@ requires-dist = [
     { name = "robomimic", editable = "third_party/robomimic" },
     { name = "robosuite", editable = "third_party/robosuite" },
     { name = "torch", specifier = "==2.10.0" },
+]
+
+[package.metadata.requires-dev]
+train = [
+    { name = "h5py", specifier = ">=3.16.0" },
+    { name = "tensorboard", specifier = ">=2.21.0" },
+    { name = "torch", specifier = "==2.10.0" },
+    { name = "tqdm", specifier = ">=4.70.1" },
 ]
 
 [[package]]
