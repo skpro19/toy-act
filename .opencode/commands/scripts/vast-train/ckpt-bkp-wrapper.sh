@@ -56,7 +56,7 @@ test -n "$run_name" || {
 write_marker "${CONTROL_DIR}/state/backup-artifact-ready" "$(date +%s%N)"
 write_marker "${CONTROL_DIR}/state/run-name" "$run_name"
 
-while true; do
+run_backup_cycle() {
   cycle_id=$(date +%s%N)
   write_marker "${CONTROL_DIR}/state/backup-cycle-started" "$cycle_id"
 
@@ -76,7 +76,7 @@ while true; do
     exit_code=${PIPESTATUS[0]}
     if [ "$exit_code" -eq 0 ]; then
       write_marker "${CONTROL_DIR}/state/backup-last-succeeded" "$cycle_id"
-      break
+      return 0
     fi
     if [ "$attempt" -lt 3 ]; then
       echo "backup attempt ${attempt} failed (exit=${exit_code}), retrying in ${retry_delay}s"
@@ -85,19 +85,23 @@ while true; do
     fi
   done
 
-  if [ "$exit_code" -ne 0 ]; then
-    printf 'FAILED cycle=%s exit=%d attempts=%d timestamp=%s\n' \
-      "$cycle_id" "$exit_code" "$attempt" "$(date -Iseconds)" >> "$BACKUP_LOG"
-    printf '{"timestamp":"%s","exit_code":%d,"attempts":%d}\n' \
-      "$(date -Iseconds)" "$exit_code" "$attempt" \
-      > "${CONTROL_DIR}/state/backup-failed.tmp"
-    mv "${CONTROL_DIR}/state/backup-failed.tmp" "${CONTROL_DIR}/state/backup-failed"
-    exit 1
-  fi
+  printf 'FAILED cycle=%s exit=%d attempts=%d timestamp=%s\n' \
+    "$cycle_id" "$exit_code" "$attempt" "$(date -Iseconds)" >> "$BACKUP_LOG"
+  printf '{"timestamp":"%s","exit_code":%d,"attempts":%d}\n' \
+    "$(date -Iseconds)" "$exit_code" "$attempt" \
+    > "${CONTROL_DIR}/state/backup-failed.tmp"
+  mv "${CONTROL_DIR}/state/backup-failed.tmp" "${CONTROL_DIR}/state/backup-failed"
+  return "$exit_code"
+}
 
-  # A successful cycle after training reaches a terminal state is the final
-  # backup: publish the acknowledgement and stop.
+while true; do
+  run_backup_cycle || exit "$?"
+
+  # A terminal marker is written only after the training process exits, but a
+  # checkpoint can be written between this cycle's file listing and the marker.
+  # Always sync once more after observing it so that checkpoint is not missed.
   if [ -e "${CONTROL_DIR}/state/completed" ] || [ -e "${CONTROL_DIR}/state/failed" ]; then
+    run_backup_cycle || exit "$?"
     write_marker "${CONTROL_DIR}/state/backup-final-succeeded" "$cycle_id"
     exit 0
   fi
