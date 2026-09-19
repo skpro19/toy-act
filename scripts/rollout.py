@@ -20,6 +20,7 @@ import argparse
 import copy
 import json
 import os
+import time
 from pathlib import Path
 
 import imageio
@@ -43,6 +44,7 @@ DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_HORIZON = 400
 DEFAULT_CAMERA = "agentview"
 GRIPPER_APERTURE_THRESHOLD = 0.002
+OPENCV_RENDER_WINDOW = "offscreen render"
 
 
 def parse_args() -> argparse.Namespace:
@@ -247,6 +249,30 @@ def predict_action_chunk(
     return pred[0].detach().cpu().numpy()
 
 
+def set_render_window_title(*, env, title: str | None) -> None:
+    if title is None:
+        return
+
+    import cv2
+
+    robosuite_env = env.env if hasattr(env, "env") else env
+    viewer = getattr(robosuite_env, "viewer", None)
+    if viewer is None:
+        return
+
+    if viewer.__class__.__name__ == "OpenCVRenderer":
+        cv2.setWindowTitle(OPENCV_RENDER_WINDOW, title)
+        return
+
+    if viewer.__class__.__name__ == "MjviewerRenderer":
+        handle = getattr(viewer, "viewer", None)
+        if handle is None:
+            return
+        simulate = handle._get_sim() if hasattr(handle, "_get_sim") else None
+        if simulate is not None and hasattr(simulate, "filename"):
+            simulate.filename = title
+
+
 def run_rollout(
     *,
     model: ACTV1,
@@ -257,7 +283,10 @@ def run_rollout(
     render: bool,
     video_writer,
     video_skip: int,
+    time_limit_s: float | None = None,
+    window_title: str | None = None,
 ) -> dict[str, float | int | bool]:
+    start = time.monotonic()
     obs = env.reset()
     total_reward = 0.0
     success = False
@@ -280,6 +309,7 @@ def run_rollout(
 
         if render:
             env.render(mode="human", camera_name=DEFAULT_CAMERA)
+            set_render_window_title(env=env, title=window_title)
         if video_writer is not None and video_count % video_skip == 0:
             frame = env.render(
                 mode="rgb_array",
@@ -295,12 +325,21 @@ def run_rollout(
                 "success": success,
                 "return": total_reward,
                 "horizon": step_idx + 1,
+                "truncated": False,
+            }
+        if time_limit_s is not None and time.monotonic() - start >= time_limit_s:
+            return {
+                "success": success,
+                "return": total_reward,
+                "horizon": step_idx + 1,
+                "truncated": True,
             }
 
     return {
         "success": success,
         "return": total_reward,
         "horizon": horizon,
+        "truncated": False,
     }
 
 
@@ -316,12 +355,14 @@ def summarize_rollouts(*, rollouts: list[dict[str, float | int | bool]]) -> dict
     success_flags = [bool(rollout["success"]) for rollout in rollouts]
     returns = [float(rollout["return"]) for rollout in rollouts]
     horizons = [int(rollout["horizon"]) for rollout in rollouts]
+    truncated_flags = [bool(rollout["truncated"]) for rollout in rollouts]
     return {
         "num_rollouts": len(rollouts),
         "num_success": int(sum(success_flags)),
         "success_rate": float(np.mean(success_flags)),
         "return_mean": float(np.mean(returns)),
         "horizon_mean": float(np.mean(horizons)),
+        "num_truncated": int(sum(truncated_flags)),
     }
 
 
