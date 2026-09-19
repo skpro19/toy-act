@@ -44,19 +44,19 @@ class ImageEncoder(nn.Module):
 
         x = x.permute(0,2,3,1)
 
-        print(f"[permute] x.shape => {x.shape}")
+        # print(f"[permute] x.shape => {x.shape}")
 
         # [C =>  d_model] projection
         x = self.project(x)
 
-        print(f"[project] x.shape => {x.shape}")
+        # print(f"[project] x.shape => {x.shape}")
 
         # enrich x with 2D positional sinusodial embeddings         
         x = get_se_2D(x)
-        print(f"x.shape => {x.shape}")
+        # print(f"x.shape => {x.shape}")
 
         # 2D => 1D tokens
         x = x.reshape(B, H * W, self.d_model)
-        print(f"x.shape => {x.shape}")
+        # print(f"x.shape => {x.shape}")
 
         return x

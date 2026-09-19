@@ -52,8 +52,8 @@ def get_se_2D(x: torch.Tensor):
     re = get_se_1D(x_rows) 
     ce = get_se_1D(x_cols)
 
-    print(f"re.shape => {re.shape}")
-    print(f"ce.shape => {ce.shape}")
+    # print(f"re.shape => {re.shape}")
+    # print(f"ce.shape => {ce.shape}")
     
     re = re.expand(W, -1, -1).permute(1,0,2)
     ce = ce.expand(H, -1, -1)
@@ -61,7 +61,7 @@ def get_se_2D(x: torch.Tensor):
     PE_2D = torch.concat([re, ce], dim=2)
     PE_2D = PE_2D.unsqueeze(0).expand(B, -1, -1, -1).to(device=x.device, dtype=x.dtype)
     
-    print(f"PE_2D.shape => {PE_2D.shape}")
+    # print(f"PE_2D.shape => {PE_2D.shape}")
 
     x = x + PE_2D
     return x

@@ -2,10 +2,11 @@
 
 ## Image Encoder
 NUM_IMG_TOKENS = 128
-IMG_DIMS = (640,480)
+IMG_DIMS = (84,84)
 
 ## Proprio Encoder
 NUM_PROPRIO_TOKENS = 1
+JOINT_DIMS = 7
 PROPRIO_DIMS = 8
 
 ## Transformer (encoder / decoder)
