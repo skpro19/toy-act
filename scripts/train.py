@@ -1,7 +1,6 @@
 """ Training script for act-v1. """
 from datetime import datetime
 from pathlib import Path
-import time
 
 import torch
 from tqdm import tqdm
@@ -23,9 +22,8 @@ from scripts.models.act_v1 import ACTV1
 
 
 BATCH_SIZE = 250
-EPOCHS = 10
+EPOCHS = 200
 LR = 1e-4
-LOG_EVERY = 1
 CHECKPOINT_EVERY = 5
 RUNS_ROOT = Path("runs/act_v1")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v1")
@@ -97,8 +95,6 @@ def train() -> None:
         pbar = tqdm(train_dataloader, desc=f"epoch {epoch + 1}/{EPOCHS}")
 
         for batch in pbar:
-            step_start = time.perf_counter()
-
             img_obs = batch["image"].to(device)
             proprio_obs = batch["proprio"].to(device)
             target_actions = batch["target_actions"].to(device)
@@ -109,7 +105,6 @@ def train() -> None:
             loss.backward()
             optimizer.step()
 
-            step_ms = (time.perf_counter() - step_start) * 1000.0
             batch_loss = loss.item()
             epoch_loss += batch_loss
 
@@ -124,12 +119,6 @@ def train() -> None:
                 ).item()
 
             num_batches += 1
-
-            if global_step % LOG_EVERY == 0:
-                writer.add_scalar("train/loss", batch_loss, global_step)
-                writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
-                writer.add_scalar("time/step_ms", step_ms, global_step)
-
             pbar.set_postfix(loss=f"{batch_loss:.4f}")
             global_step += 1
 
