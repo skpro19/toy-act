@@ -68,7 +68,7 @@ class CanPhDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str | int]:
         hdf5 = self._get_hdf5()
         demo_name, timestep = self.samples[idx]
         demo = hdf5[f"data/{demo_name}"]
@@ -97,4 +97,6 @@ class CanPhDataset(Dataset):
             "image": image_to_tensor(image),
             "proprio": torch.from_numpy(proprio).unsqueeze(0),
             "target_actions": torch.from_numpy(target_actions),
+            "demo_name": demo_name,
+            "timestep": timestep,
         }
