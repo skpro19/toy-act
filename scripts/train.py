@@ -1,9 +1,12 @@
 """ Training script for act-v1. """
 import json
+import os
+import random
 from collections import deque
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import torch
 from tqdm import tqdm
 from torch import nn
@@ -26,6 +29,7 @@ from scripts.models.act_v1 import ACTV1
 BATCH_SIZE = 250
 EPOCHS = 200
 LR = 1e-4
+SEED = 0
 CHECKPOINT_EVERY = 10
 RUNS_ROOT = Path("runs/act_v1")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v1")
@@ -39,6 +43,30 @@ ACTIVATION_HOOK_TAGS = (
 SPIKE_MEDIAN_WINDOW = 100
 SPIKE_MIN_BATCHES = 20
 SPIKE_RATIO = 5.0
+
+
+def seed_everything(*, seed: int) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def make_dataloader_worker_init_fn(*, base_seed: int):
+    def worker_init_fn(worker_id: int) -> None:
+        worker_seed = base_seed + worker_id
+        np.random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
+    return worker_init_fn
+
+
+def make_dataloader_generator(*, seed: int) -> torch.Generator:
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
 
 
 def make_run_name(*, batch_size: int, lr: float) -> str:
@@ -140,12 +168,17 @@ def register_activation_norm_hooks(*, model: ACTV1) -> tuple[dict[str, float], l
 
 
 def train() -> None:
+    seed_everything(seed=SEED)
+
     can_ph_dataset = CanPhDataset(file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5", k=ACTION_CHUNK_SIZE)
+    dataloader_generator = make_dataloader_generator(seed=SEED)
     train_dataloader = DataLoader(
         dataset=can_ph_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=4,
+        generator=dataloader_generator,
+        worker_init_fn=make_dataloader_worker_init_fn(base_seed=SEED),
     )
 
     device = torch.device("cuda")
@@ -169,6 +202,7 @@ def train() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(run_dir))
+    print(f"seed => {SEED}")
     print(f"tensorboard logs => {run_dir.resolve()}")
     print(f"checkpoints => {checkpoint_dir.resolve()}")
     print(f"loss spike logs => {anomalies_dir.resolve()}")
