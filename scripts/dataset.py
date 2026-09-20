@@ -41,12 +41,20 @@ def image_to_tensor(image: np.ndarray) -> torch.Tensor:
 
 class CanPhDataset(Dataset):
     def __init__(self, *, file: str, k: int = ACTION_CHUNK_SIZE) -> None:
-        self.hdf5 = h5py.File(file, "r")
+        self.file = file
         self.k = k
-        self.samples = self._build_sample_index()
+        self._hdf5: h5py.File | None = None
+        with h5py.File(file, "r") as hdf5:
+            self.samples = self._build_sample_index(hdf5=hdf5)
 
-    def _build_sample_index(self) -> list[tuple[str, int]]:
-        data = self.hdf5["data"]
+    def _get_hdf5(self) -> h5py.File:
+        # Open lazily so each DataLoader worker gets its own fork-safe handle.
+        if self._hdf5 is None:
+            self._hdf5 = h5py.File(self.file, "r")
+        return self._hdf5
+
+    def _build_sample_index(self, *, hdf5: h5py.File) -> list[tuple[str, int]]:
+        data = hdf5["data"]
         demo_names = sorted(data.keys(), key=lambda name: int(name.split("_")[1]))
 
         samples: list[tuple[str, int]] = []
@@ -61,8 +69,9 @@ class CanPhDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        hdf5 = self._get_hdf5()
         demo_name, timestep = self.samples[idx]
-        demo = self.hdf5[f"data/{demo_name}"]
+        demo = hdf5[f"data/{demo_name}"]
 
         image = demo["obs/agentview_image"][timestep]
         joint_pos = demo["obs/robot0_joint_pos"][timestep]

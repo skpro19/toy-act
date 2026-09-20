@@ -24,7 +24,7 @@ from scripts.models.act_v1 import ACTV1
 BATCH_SIZE = 250
 EPOCHS = 200
 LR = 1e-4
-CHECKPOINT_EVERY = 5
+CHECKPOINT_EVERY = 10
 RUNS_ROOT = Path("runs/act_v1")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v1")
 
