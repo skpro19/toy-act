@@ -27,7 +27,7 @@ import imageio
 import numpy as np
 import torch
 
-from scripts.dataset import build_proprio, image_to_tensor
+from scripts.dataset import NormalizationStats, build_proprio, image_to_tensor
 from scripts.models.act_v1 import ACTV1
 from scripts.models.act_v1.config import (
     ACTION_CHUNK_SIZE,
@@ -175,7 +175,26 @@ def create_rollout_env(
     )
 
 
-def load_model(*, checkpoint_path: Path, device: torch.device) -> ACTV1:
+def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
+    if "normalization" not in checkpoint:
+        raise KeyError(
+            "checkpoint is missing 'normalization' stats; retrain with the current "
+            "scripts/train.py so rollouts can reproduce the training-time preprocessing"
+        )
+    stats = checkpoint["normalization"]
+    return NormalizationStats(
+        proprio_mean=np.asarray(stats["proprio_mean"], dtype=np.float32),
+        proprio_std=np.asarray(stats["proprio_std"], dtype=np.float32),
+        action_mean=np.asarray(stats["action_mean"], dtype=np.float32),
+        action_std=np.asarray(stats["action_std"], dtype=np.float32),
+    )
+
+
+def load_model(
+    *,
+    checkpoint_path: Path,
+    device: torch.device,
+) -> tuple[ACTV1, NormalizationStats]:
     model = ACTV1(
         d_model=D_MODEL,
         nhead=N_HEAD,
@@ -187,7 +206,8 @@ def load_model(*, checkpoint_path: Path, device: torch.device) -> ACTV1:
     model.load_state_dict(checkpoint["model"])
     model.to(device=device)
     model.eval()
-    return model
+    normalization = normalization_from_checkpoint(checkpoint=checkpoint)
+    return model, normalization
 
 
 def obs_image_to_tensor(*, image: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -203,11 +223,17 @@ def obs_image_to_tensor(*, image: np.ndarray, device: torch.device) -> torch.Ten
     return tensor.unsqueeze(0).to(device=device)
 
 
-def obs_to_proprio_tensor(*, obs: dict, device: torch.device) -> torch.Tensor:
+def obs_to_proprio_tensor(
+    *,
+    obs: dict,
+    device: torch.device,
+    normalization: NormalizationStats,
+) -> torch.Tensor:
     proprio = build_proprio(
         joint_pos=np.asarray(obs["robot0_joint_pos"], dtype=np.float32),
         gripper_qpos=np.asarray(obs["robot0_gripper_qpos"], dtype=np.float32),
     )
+    proprio = normalization.normalize_proprio(value=proprio)
     return torch.from_numpy(proprio).float().reshape(1, 1, PROPRIO_DIMS).to(device=device)
 
 
@@ -235,21 +261,34 @@ def model_action_to_sim(*, model_action: np.ndarray, obs: dict) -> np.ndarray:
     return sim_action
 
 
+def denormalize_action(
+    *,
+    action: np.ndarray,
+    normalization: NormalizationStats,
+) -> np.ndarray:
+    return (action * normalization.action_std + normalization.action_mean).astype(np.float32)
+
+
 def predict_action_chunk(
     *,
     model: ACTV1,
     obs: dict,
     device: torch.device,
+    normalization: NormalizationStats,
 ) -> np.ndarray:
     image_key = f"{DEFAULT_CAMERA}_image"
     if image_key not in obs:
         raise KeyError(f"expected observation key {image_key!r}, got {sorted(obs.keys())}")
 
     img_tensor = obs_image_to_tensor(image=obs[image_key], device=device)
-    proprio_tensor = obs_to_proprio_tensor(obs=obs, device=device)
+    proprio_tensor = obs_to_proprio_tensor(
+        obs=obs,
+        device=device,
+        normalization=normalization,
+    )
     with torch.no_grad():
         pred = model(img_tensor=img_tensor, proprio_tensor=proprio_tensor)
-    return pred[0].detach().cpu().numpy()
+    return denormalize_action(action=pred[0].detach().cpu().numpy(), normalization=normalization)
 
 
 def set_render_window_title(*, env, title: str | None) -> None:
@@ -281,6 +320,7 @@ def run_rollout(
     model: ACTV1,
     env,
     device: torch.device,
+    normalization: NormalizationStats,
     horizon: int,
     terminate_on_success: bool,
     render: bool,
@@ -299,7 +339,12 @@ def run_rollout(
 
     for step_idx in range(horizon):
         if action_chunk is None or chunk_step >= ACTION_CHUNK_SIZE:
-            action_chunk = predict_action_chunk(model=model, obs=obs, device=device)
+            action_chunk = predict_action_chunk(
+                model=model,
+                obs=obs,
+                device=device,
+                normalization=normalization,
+            )
             chunk_step = 0
 
         sim_action = model_action_to_sim(model_action=action_chunk[chunk_step], obs=obs)
@@ -392,7 +437,7 @@ def main() -> None:
         on_screen=on_screen,
         write_video=write_video,
     )
-    model = load_model(checkpoint_path=args.checkpoint, device=device)
+    model, normalization = load_model(checkpoint_path=args.checkpoint, device=device)
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
     rollouts: list[dict[str, float | int | bool]] = []
@@ -402,6 +447,7 @@ def main() -> None:
                 model=model,
                 env=env,
                 device=device,
+                normalization=normalization,
                 horizon=args.horizon,
                 terminate_on_success=args.terminate_on_success,
                 render=on_screen,
