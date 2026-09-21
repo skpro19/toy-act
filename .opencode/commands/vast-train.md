@@ -35,6 +35,23 @@ including cleanup.
 | Remote control dir | `/workspace/toy-act/.vast-train` |
 | Remote TensorBoard | `127.0.0.1:6006` on the instance |
 | Instance label | `toy-act-train` |
+| Local run state | `.vast-train-local/toy-act-<INSTANCE_ID>/` |
+
+## Local run state
+
+Create one `.vast-train-local/toy-act-<INSTANCE_ID>/` directory per instance at
+provisioning time. It is the local audit and recovery record for the run and is
+gitignored, so it is never committed. It holds:
+
+| File | Contents |
+|---|---|
+| `setup.env` | Key/value record: instance id, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, S3 checkpoint URI, and watcher pid/script/log/report paths |
+| `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
+| `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
+| `watcher.sh` | The exact detached watcher script that was launched |
+| `watcher.pid` | PID of the detached watcher, for liveness checks and recovery |
+| `watcher.log` | Timestamped watcher events and training progress |
+| `report.txt` | Final outcome report written by the watcher (run name, S3 URIs, elapsed time, price, pinned commit, TensorBoard URL, S3 verification, cleanup status) |
 
 ## Workflow
 
@@ -187,12 +204,15 @@ including cleanup.
       `CHECKPOINT_EVERY` and `EPOCHS` values;
     - always destroy the instance through the EXIT trap and verify it no longer
       appears in `vastai show instances --raw`;
-    - write a report file recording the run name, S3 URI, elapsed time, selected
-      offer price, pinned commit, TensorBoard URL, and final cleanup status.
+    - write its PID to `.vast-train-local/toy-act-<INSTANCE_ID>/watcher.pid` and
+      write a report to `.vast-train-local/toy-act-<INSTANCE_ID>/report.txt`
+      recording the run name, S3 URI, elapsed time, selected offer price, pinned
+      commit, TensorBoard URL, and final cleanup status.
 18. Report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
-    URL, and the watcher log/report path to the user, then return without
-    blocking on the training run. Do not keep polling training progress in the
-    interactive session.
+    URL, and the local run-state directory
+    `.vast-train-local/toy-act-<INSTANCE_ID>/` (log at `watcher.log`, report at
+    `report.txt`) to the user, then return without blocking on the training run.
+    Do not keep polling training progress in the interactive session.
 
 If setup fails, destroy the instance through the watcher trap (or directly when
 no watcher was started yet) and report the failure. If training fails, the
@@ -204,4 +224,5 @@ Because `VAST_API_KEY` is deliberately never placed on the instance, the
 instance cannot clean itself up. If the local machine sleeps, reboots, or the
 watcher is hard-killed, cleanup cannot run and the instance will leak; in that
 case check `vastai show instances --raw` and destroy the labeled instance
-manually.
+manually. The instance id and label needed for that cleanup are recoverable from
+`.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and `instance.json`.

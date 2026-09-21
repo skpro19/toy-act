@@ -19,4 +19,6 @@ runs/
 third_party/
 replays/
 
+.vast-train-local/
+
 ISSUES.md
