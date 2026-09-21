@@ -44,6 +44,9 @@ DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_HORIZON = 400
 DEFAULT_CAMERA = "agentview"
 GRIPPER_APERTURE_THRESHOLD = 0.002
+# robosuite Panda GRIP convention: -1 opens the fingers, +1 closes them.
+GRIPPER_OPEN_COMMAND = -1.0
+GRIPPER_CLOSE_COMMAND = 1.0
 OPENCV_RENDER_WINDOW = "offscreen render"
 
 
@@ -216,9 +219,9 @@ def current_gripper_aperture(*, obs: dict) -> float:
 def gripper_command(*, target_aperture: float, current_aperture: float) -> float:
     delta = target_aperture - current_aperture
     if delta > GRIPPER_APERTURE_THRESHOLD:
-        return 1.0
+        return GRIPPER_OPEN_COMMAND
     if delta < -GRIPPER_APERTURE_THRESHOLD:
-        return -1.0
+        return GRIPPER_CLOSE_COMMAND
     return 0.0
 
 
