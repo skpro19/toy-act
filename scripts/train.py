@@ -14,7 +14,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from scripts.dataset import CanPhDataset
+from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v1.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
@@ -82,6 +82,7 @@ def save_checkpoint(
     model: ACTV1,
     optimizer: optim.Optimizer,
     loss_epoch: float,
+    normalization: NormalizationStats,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -91,6 +92,7 @@ def save_checkpoint(
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "loss_epoch": loss_epoch,
+            "normalization": normalization.as_checkpoint_dict(),
         },
         path,
     )
@@ -170,7 +172,10 @@ def register_activation_norm_hooks(*, model: ACTV1) -> tuple[dict[str, float], l
 def train() -> None:
     seed_everything(seed=SEED)
 
-    can_ph_dataset = CanPhDataset(file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5", k=ACTION_CHUNK_SIZE)
+    can_ph_dataset = CanPhDataset(
+        file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5",
+        k=ACTION_CHUNK_SIZE,
+    )
     dataloader_generator = make_dataloader_generator(seed=SEED)
     train_dataloader = DataLoader(
         dataset=can_ph_dataset,
@@ -194,6 +199,9 @@ def train() -> None:
     loss_fn = nn.MSELoss()
     model_parameters = list(model.parameters())
     activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
+    normalization = can_ph_dataset.normalization
+    action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
+    action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
     run_name = make_run_name(batch_size=BATCH_SIZE, lr=LR)
     run_dir = RUNS_ROOT / run_name
@@ -249,10 +257,12 @@ def train() -> None:
                     parameters=model_parameters,
                     before=params_before,
                 )
-                pred_joint = pred[..., :JOINT_DIMS]
-                pred_gripper = pred[..., JOINT_DIMS:]
-                target_joint = target_actions[..., :JOINT_DIMS]
-                target_gripper = target_actions[..., JOINT_DIMS:]
+                pred_physical = pred.detach() * action_std + action_mean
+                target_actions_physical = target_actions * action_std + action_mean
+                pred_joint = pred_physical[..., :JOINT_DIMS]
+                pred_gripper = pred_physical[..., JOINT_DIMS:]
+                target_joint = target_actions_physical[..., :JOINT_DIMS]
+                target_gripper = target_actions_physical[..., JOINT_DIMS:]
 
                 batch_joint_mse = loss_fn(pred_joint, target_joint).item()
                 batch_gripper_mse = loss_fn(pred_gripper, target_gripper).item()
@@ -268,10 +278,18 @@ def train() -> None:
                 target_gripper_min = target_gripper.min().item()
                 target_gripper_max = target_gripper.max().item()
 
-                per_sample_mse = ((pred - target_actions) ** 2).mean(dim=(1, 2))
-                worst_sample_index = int(per_sample_mse.argmax().item())
+                per_sample_normalized_mse = ((pred - target_actions) ** 2).mean(dim=(1, 2))
+                per_sample_physical_mse = (
+                    (pred_physical - target_actions_physical) ** 2
+                ).mean(dim=(1, 2))
+                worst_sample_index = int(per_sample_normalized_mse.argmax().item())
                 worst_sample = sample_records[worst_sample_index]
-                worst_sample_mse = float(per_sample_mse[worst_sample_index].item())
+                worst_sample_mse_normalized = float(
+                    per_sample_normalized_mse[worst_sample_index].item()
+                )
+                worst_sample_mse_physical = float(
+                    per_sample_physical_mse[worst_sample_index].item()
+                )
 
             rolling_median_loss = None
             if len(recent_losses) >= SPIKE_MIN_BATCHES:
@@ -298,7 +316,8 @@ def train() -> None:
                         "target_max_joint": target_joint_max,
                         "target_min_gripper": target_gripper_min,
                         "target_max_gripper": target_gripper_max,
-                        "worst_sample_mse": worst_sample_mse,
+                        "worst_sample_mse_normalized": worst_sample_mse_normalized,
+                        "worst_sample_mse_physical": worst_sample_mse_physical,
                     }
                     for tag in ACTIVATION_HOOK_TAGS:
                         debug_metrics[f"act_{tag}"] = activation_norms[tag]
@@ -362,6 +381,7 @@ def train() -> None:
             model=model,
             optimizer=optimizer,
             loss_epoch=avg_loss,
+            normalization=normalization,
         )
         if (epoch + 1) % CHECKPOINT_EVERY == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
@@ -372,6 +392,7 @@ def train() -> None:
                 model=model,
                 optimizer=optimizer,
                 loss_epoch=avg_loss,
+                normalization=normalization,
             )
             print(f"saved snapshot => {snapshot_path.resolve()}")
 
