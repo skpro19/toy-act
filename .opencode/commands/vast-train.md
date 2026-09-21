@@ -167,7 +167,10 @@ including cleanup.
     `state/backup-last-succeeded`; fail immediately if `state/backup-failed`
     appears or `ckpt-bkp` exits. The wrapper discovers the single run directory,
     then synchronizes `checkpoints/act_v1/<run>` and `runs/act_v1/<run>` to S3
-    every 120 seconds using `scripts/s3_backup.py`.
+    every 120 seconds using `scripts/s3_backup.py`. The rolling `last.pt` is
+    excluded from synchronization because it is rewritten in place while training
+    runs; only the immutable periodic snapshots are uploaded. An existing
+    `last.pt` object, if present, is left untouched rather than deleted.
 17. Hand off to a detached local watcher and stop babysitting. Launch the
     watcher with `setsid`/`nohup` so it survives the interactive agent returning,
     and make the watcher own the step-7 EXIT trap and the local `VAST_API_KEY`.
@@ -180,7 +183,7 @@ including cleanup.
       flooding;
     - on success, wait for `state/backup-final-succeeded`, read the run name from
       `state/run-name`, then verify locally through the workload profile that S3
-      contains `last.pt` and every expected periodic snapshot for the current
+      contains every expected periodic snapshot for the current
       `CHECKPOINT_EVERY` and `EPOCHS` values;
     - always destroy the instance through the EXIT trap and verify it no longer
       appears in `vastai show instances --raw`;

@@ -21,7 +21,12 @@ Boto3's standard credential chain supplies credentials. This includes IAM
 roles, AWS profiles, and the AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY variables.
 
 Object keys use the exact local project-relative paths (e.g.,
-``checkpoints/act_v1/<run-name>/last.pt``).
+``checkpoints/act_v1/<run-name>/epoch_010.pt``).
+
+The rolling ``last.pt`` checkpoint is rewritten in place while training runs.
+Uploading it mid-write corrupts multipart transfers, so it is intentionally not
+uploaded. It is still treated as a managed path, which leaves any existing
+object untouched instead of deleting it.
 """
 
 import argparse
@@ -47,6 +52,10 @@ COMPONENT_BASE: dict[str, tuple[Path, str]] = {
     "runs": (Path("runs/act_v1"), "runs/act_v1"),
 }
 COMPONENT_DEFAULT = list(COMPONENT_BASE)
+
+# Files that are rewritten in place during training are never uploaded because a
+# concurrent write would corrupt the multipart transfer.
+EXCLUDED_FILENAMES = frozenset({"last.pt"})
 
 
 def _s3_client(*, region: str | None, endpoint_url: str | None) -> Any:
@@ -105,16 +114,20 @@ def _sync_directory(
     source: Path,
     destination: str,
 ) -> tuple[int, int]:
-    files = sorted(
+    managed_files = sorted(
         path
         for path in source.rglob("*")
         if path.is_file() and not path.name.endswith(".tmp")
     )
     uploads = [
         (path, _key(destination, path.relative_to(source).as_posix()))
-        for path in files
+        for path in managed_files
+        if path.name not in EXCLUDED_FILENAMES
     ]
-    expected_keys = {object_key for _, object_key in uploads}
+    expected_keys = {
+        _key(destination, path.relative_to(source).as_posix())
+        for path in managed_files
+    }
     existing_objects = _list_objects(
         client=client,
         bucket=bucket,
@@ -143,7 +156,7 @@ def _sync_directory(
 
     stale_keys = sorted(set(existing_objects) - expected_keys)
     _delete_keys(client=client, bucket=bucket, keys=stale_keys)
-    return len(files), uploaded
+    return len(managed_files), uploaded
 
 
 def cmd_upload(args: argparse.Namespace) -> None:
