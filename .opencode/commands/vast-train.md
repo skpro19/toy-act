@@ -3,7 +3,7 @@ description: Train ACT on a temporary Vast.ai RTX 4090 with S3 checkpoints
 agent: build
 ---
 
-Run `scripts/train.py` on a newly provisioned Vast.ai instance and store every
+Run `scripts/train_v1.py` on a newly provisioned Vast.ai instance and store every
 completed checkpoint in `s3://toy-act/checkpoints/act_v1/`. Provision the latest
 commit of the `dev` branch by cloning GitHub on the instance; do not transfer the
 local working tree. Fetch the dataset from S3 at its project-relative path

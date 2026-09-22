@@ -179,7 +179,7 @@ def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
     if "normalization" not in checkpoint:
         raise KeyError(
             "checkpoint is missing 'normalization' stats; retrain with the current "
-            "scripts/train.py so rollouts can reproduce the training-time preprocessing"
+            "scripts/train_v1.py so rollouts can reproduce the training-time preprocessing"
         )
     stats = checkpoint["normalization"]
     return NormalizationStats(
