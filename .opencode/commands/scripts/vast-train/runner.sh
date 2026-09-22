@@ -62,7 +62,7 @@ touch "$LOG_FILE" || exit 1
 setsid bash -c '
   set -o pipefail
   /root/.local/bin/uv run --frozen --only-group train \
-    python -m scripts.train 2>&1 | tee -a "$1"
+    python -m scripts.train_v1 2>&1 | tee -a "$1"
 ' bash "$LOG_FILE" &
 runner_pid=$!
 write_marker "${CONTROL_DIR}/state/runner-pid" "$runner_pid"
