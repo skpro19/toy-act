@@ -62,7 +62,7 @@ class CVAEEncoder(nn.Module):
         # print(f"z_out.shape => {z_out.shape}")
 
         mu = cls_out[..., :self.z_dims]
-        log_sigma_x2 = cls_out[..., self.z_dims:]
+        log_sigma_x2 = cls_out[..., -self.z_dims:]
 
         # print(f"[cvae_encoder] mu.shape => {mu.shape} log_sigma_x2.shape => {log_sigma_x2.shape}")
 
