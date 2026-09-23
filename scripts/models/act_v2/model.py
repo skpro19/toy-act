@@ -71,9 +71,9 @@ class ACTV2(nn.Module):
         action_tokens = self.action_encoder(actions)
         img_tokens = self.image_encoder(img)
 
-        print(f"cls.shape => {cls.shape}")
-        print(f"proprio_tokens.shape => {proprio_tokens.shape}")
-        print(f"action_tokens.shape => {action_tokens.shape}")
+        # print(f"cls.shape => {cls.shape}")
+        # print(f"proprio_tokens.shape => {proprio_tokens.shape}")
+        # print(f"action_tokens.shape => {action_tokens.shape}")
 
         src_cvae_encoder = torch.concat([cls, proprio_tokens, action_tokens], dim=1)
 
@@ -82,8 +82,8 @@ class ACTV2(nn.Module):
         # mu, log(sigma-squared)
         mu, log_sigma_x2 = self.cvae_encoder(src=src_cvae_encoder)
 
-        print(f"mu.shape => {mu.shape}")
-        print(f"log_sigma_x2.shape => {log_sigma_x2.shape}")
+        # print(f"mu.shape => {mu.shape}")
+        # print(f"log_sigma_x2.shape => {log_sigma_x2.shape}")
 
         # sample z
         z = mu + torch.randn(B, self.z_dims) * torch.sqrt(torch.exp(log_sigma_x2))
@@ -100,4 +100,5 @@ class ACTV2(nn.Module):
         decoded_actions = self.transformer_decoder(tgt=decoder_tgt, memory=memory)
 
         actions = self.action_head(decoded_actions)
-        return actions
+        
+        return actions, mu, log_sigma_x2
