@@ -5,7 +5,7 @@ agent: build
 
 Run `scripts/train_v2.py` on a newly provisioned Vast.ai instance and store every
 completed checkpoint in `s3://toy-act/checkpoints/act_v2/`. Provision the latest
-commit of the `dev` branch by cloning GitHub on the instance; do not transfer the
+commit of the `act-v2` branch by cloning GitHub on the instance; do not transfer the
 local working tree. Fetch the dataset from S3 at its project-relative path
 instead of copying it from the local machine.
 
@@ -28,7 +28,7 @@ including cleanup.
 | S3 region | `ap-south-1` |
 | S3 destination | `s3://toy-act/checkpoints/act_v2/` |
 | Git remote | `https://github.com/skpro19/toy-act.git` |
-| Git branch | `dev` |
+| Git branch | `act-v2` |
 | Dataset | `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` |
 | Dataset S3 source | `s3://toy-act/datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` |
 | Remote project | `/workspace/toy-act` |
@@ -62,13 +62,13 @@ gitignored, so it is never committed. It holds:
    - listing `s3://toy-act/checkpoints/act_v2/` succeeds;
    - `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` exists locally;
    - `uv lock --check` succeeds.
-2. Pin the code to the latest `dev` commit and confirm it is anonymously
+2. Pin the code to the latest `act-v2` commit and confirm it is anonymously
    clonable, because the instance has no GitHub credentials:
-   - `git fetch origin dev` and set `GIT_COMMIT=$(git rev-parse origin/dev)`;
-   - `git ls-remote https://github.com/skpro19/toy-act.git dev` must succeed
+   - `git fetch origin act-v2` and set `GIT_COMMIT=$(git rev-parse origin/act-v2)`;
+   - `git ls-remote https://github.com/skpro19/toy-act.git act-v2` must succeed
      without prompting for a username. If it prompts, stop and ask the user to
      make the repository public; never embed tokens, keys, or credentials;
-   - if the local working tree is dirty or local `dev` differs from `origin/dev`,
+   - if the local working tree is dirty or local `act-v2` differs from `origin/act-v2`,
      warn the user that the clone will not include those local changes.
 3. Refuse to continue if an instance with the exact label `toy-act-train-actv2`
    already exists. Never destroy or reuse an unrelated instance.
@@ -105,7 +105,7 @@ gitignored, so it is never committed. It holds:
 9. Clone the pinned commit on the instance and verify it:
 
    ```bash
-   git clone --branch dev --single-branch \
+   git clone --branch act-v2 --single-branch \
      https://github.com/skpro19/toy-act.git /workspace/toy-act
    test "$(git -C /workspace/toy-act rev-parse HEAD)" = "$GIT_COMMIT"
    ```
