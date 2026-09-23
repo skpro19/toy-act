@@ -7,7 +7,9 @@
 - for `.canvas.tsx` files, follow `.cursor/rules/canvas.mdc` (design template based on `cs231n-multi-head-attention.canvas.tsx`)
 
 ## AWS Administration
-- source `.env` or always use `AWS_PROFILE=toy-pickplace-backup` when running `aws` CLI commands for S3; the bucket is `s3://toy-pickplace`, region is `ap-south-1`
+- source `.env` or always use `AWS_PROFILE=toy-pickplace-backup` when running `aws` CLI commands for S3; the profile covers `s3://toy-pickplace` and prefix-scoped access to `s3://toy-act` (`checkpoints/act_v1`, `checkpoints/act_v2`, `runs/act_v1`, `runs/act_v2`, `datasets`), region is `ap-south-1`
+- `s3://toy-act` access is prefix-scoped, so a prefix that is not in the policy (for example a new act version) is denied even though other prefixes work; `AccessDenied` on list or `403` on read almost always means the prefix is missing from the policy, not bad credentials
+- `aws configure export-credentials --profile <profile> --format env-no-export` emits `KEY=VALUE` lines suitable for `uv run --env-file`; never print, commit, or transfer the output outside the workload
 - when an application profile lacks permission to update its own IAM policy, use `aws login --profile <admin-profile> --region <region>` only after the user explicitly authorizes browser-based authentication
 - verify the authenticated principal with `aws sts get-caller-identity --profile <admin-profile>` before making changes
 - apply the narrowest required IAM policy from a reviewed JSON file; never place credentials, account-specific tokens, or browser-login URLs in repository files
@@ -20,10 +22,14 @@
 3. verify identity: `aws sts get-caller-identity --profile <admin-profile>`
 4. list the user's inline policies: `aws iam list-user-policies --profile <admin-profile> --user-name <user>`
 5. inspect the current policy document: `aws iam get-user-policy --profile <admin-profile> --user-name <user> --policy-name <policy>`
-6. update the policy inline (keep existing statements, add new ones): `aws iam put-user-policy --profile <admin-profile> --user-name <user> --policy-name <policy> --policy-document '{"Version":"2012-10-17","Statement":[...]}'`
+6. update the policy inline (keep existing statements, add new ones): `aws iam put-user-policy --profile <admin-profile> --user-name <user> --policy-name <policy> --policy-document file://reviewed-policy.json`
 7. wait a few seconds for IAM propagation (inline policies can take ~10s)
 8. verify with the workload profile: e.g. `aws s3 ls --profile <workload-profile>`
 9. log out admin: `aws logout --profile <admin-profile>`
+
+Notes:
+- the workload user has a 2048-byte total limit across all inline policies; if a new inline policy would exceed it (`LimitExceeded` on `put-user-policy`), update an existing inline policy or attach a version to a managed policy (`aws iam create-policy-version <policy-arn> --policy-document file://reviewed.json --set-as-default`)
+- verify write and delete too, not just list: a small throwaway `put-object`/`delete-object` under the new prefix confirms the full grant before starting a long run
 
 
 ## uv commands
