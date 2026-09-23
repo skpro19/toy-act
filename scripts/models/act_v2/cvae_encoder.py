@@ -50,7 +50,7 @@ class CVAEEncoder(nn.Module):
         
         out = self.transformer_encoder(src) # [B, k + 2, d_model]
 
-        print(f"[cvae encoder] out.shape => {out.shape}")
+        # print(f"[cvae encoder] out.shape => {out.shape}")
 
         # cls_out = out[:, 0, :]
 
@@ -58,13 +58,15 @@ class CVAEEncoder(nn.Module):
 
         cls_out = self.z_head(out[:, 0, :])
         cls_out = cls_out.unsqueeze(1)
-        print(f"cls_out.shape => {cls_out.shape}")
+        # print(f"cls_out.shape => {cls_out.shape}")
         # print(f"z_out.shape => {z_out.shape}")
 
         mu = cls_out[..., :self.z_dims]
-        log_sigma_x2 = cls_out[..., self.z_dims]
+        log_sigma_x2 = cls_out[..., self.z_dims:]
 
-        print(f"mu.shape => {mu.shape}")
-        print(f"log_sigma_x2.shape => {log_sigma_x2.shape}")
+        # print(f"[cvae_encoder] mu.shape => {mu.shape} log_sigma_x2.shape => {log_sigma_x2.shape}")
+
+        # print(f"mu.shape => {mu.shape}")
+        # print(f"log_sigma_x2.shape => {log_sigma_x2.shape}")
         
         return mu, log_sigma_x2
