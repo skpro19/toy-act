@@ -115,9 +115,13 @@ gitignored, so it is never committed. It holds:
 
 5. Keep offers at or below `$0.80/hour`, reject EPYC 7001/7002, and rank by
    CPU family (EPYC 9005, EPYC 9004, Threadripper 7000, EPYC 7003, modern
-   Ryzen 7000/9000), then price, disk bandwidth, and reliability. Automatically
-   try up to the best three offers in order. Never weaken a filter without
-   asking the user.
+   Ryzen 7000/9000), then price, disk bandwidth, and reliability. Also reject
+   offers whose `machine_id` appears in
+   `.vast-train-local/failed-machines.tsv` with a failure timestamp from the
+   preceding 24 hours. Each quarantine record is a tab-separated Unix
+   timestamp, machine id, and fixed reason (`gpu-start-error`). Ignore older
+   records. Automatically try up to the best three non-quarantined offers in
+   order. Never weaken a filter without asking the user.
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
    and `INSTANCE_LABEL`. Reconcile the instance by exact label after every
    create attempt; do not rely only on parsing create-command output.
@@ -126,8 +130,16 @@ gitignored, so it is never committed. It holds:
    in `vastai show instances --raw`. The trap must run on both success and
    failure. Do not install the trap in the interactive agent shell: returning
    from the agent must not destroy the running instance.
-8. Wait up to ten minutes for `vastai ssh-url INSTANCE_ID` and successful SSH.
-   Use a command-specific temporary `known_hosts` file populated by
+8. Poll the exact instance record for up to ten minutes. Require
+   `actual_status=running` before accepting `vastai ssh-url INSTANCE_ID` or
+   attempting SSH. If `status_msg` reports a GPU error or says the instance is
+   unable to start, append the selected offer's `machine_id` to
+   `.vast-train-local/failed-machines.tsv` under the same
+   `/tmp/toy-act-local-wrapper.lock` `flock`, destroy the failed instance and
+   verify its removal, re-run the offer search, and continue with the next
+   ranked non-quarantined machine. Quarantine by `machine_id`, not offer id,
+   because Vast can immediately advertise the same machine under a new offer
+   id. Use a command-specific temporary `known_hosts` file populated by
    `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, rsync, and
    port-forwarding.
 9. Verify the provisioned hardware against the selected offer before cloning.
