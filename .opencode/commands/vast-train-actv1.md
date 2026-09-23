@@ -34,8 +34,24 @@ including cleanup.
 | Remote project | `/workspace/toy-act` |
 | Remote control dir | `/workspace/toy-act/.vast-train` |
 | Remote TensorBoard | `127.0.0.1:6006` on the instance |
-| Instance label | `toy-act-train-actv1` |
+| Instance label | `toy-act-train-actv1-<timestamp>` (generated per invocation) |
 | Local run state | `.vast-train-local/toy-act-<INSTANCE_ID>/` |
+
+## Instance label
+
+Construct the instance label once per invocation, before provisioning, by
+appending a date-time stamp to the fixed prefix:
+
+```bash
+RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+INSTANCE_LABEL="toy-act-train-actv1-${RUN_TIMESTAMP}"
+```
+
+`RUN_TIMESTAMP` uses the same `YYYYMMDD-HHMMSS` form as `make_run_name`, so the
+label stays recognizable while remaining unique across repeated or concurrent
+invocations. Do not regenerate `RUN_TIMESTAMP` later in the workflow. Record
+`INSTANCE_LABEL` in `setup.env` so the exact label stays recoverable for
+cleanup.
 
 ## Local run state
 
@@ -45,7 +61,7 @@ gitignored, so it is never committed. It holds:
 
 | File | Contents |
 |---|---|
-| `setup.env` | Key/value record: instance id, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, S3 checkpoint URI, and watcher pid/script/log/report paths |
+| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, S3 checkpoint URI, and watcher pid/script/log/report paths |
 | `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
 | `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
 | `watcher.sh` | The exact detached watcher script that was launched |
@@ -70,7 +86,7 @@ gitignored, so it is never committed. It holds:
      make the repository public; never embed tokens, keys, or credentials;
    - if the local working tree is dirty or local `dev` differs from `origin/dev`,
      warn the user that the clone will not include those local changes.
-3. Refuse to continue if an instance with the exact label `toy-act-train-actv1`
+3. Refuse to continue if an instance with the exact label `$INSTANCE_LABEL`
    already exists. Never destroy or reuse an unrelated instance.
 4. Search offers with the following hard filters:
 
@@ -91,8 +107,8 @@ gitignored, so it is never committed. It holds:
    try up to the best three offers in order. Never weaken a filter without
    asking the user.
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
-   and label. Reconcile the instance by exact label after every create attempt;
-   do not rely only on parsing create-command output.
+   and `INSTANCE_LABEL`. Reconcile the instance by exact label after every
+   create attempt; do not rely only on parsing create-command output.
 7. Once an instance ID exists, the detached watcher described in step 18 owns an
    EXIT trap that destroys that exact instance and verifies it no longer appears
    in `vastai show instances --raw`. The trap must run on both success and
@@ -265,5 +281,6 @@ Because `VAST_API_KEY` is deliberately never placed on the instance, the
 instance cannot clean itself up. If the local machine sleeps, reboots, or the
 watcher is hard-killed, cleanup cannot run and the instance will leak; in that
 case check `vastai show instances --raw` and destroy the labeled instance
-manually. The instance id and label needed for that cleanup are recoverable from
-`.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and `instance.json`.
+manually. The instance id and exact `INSTANCE_LABEL` needed for that cleanup are
+recoverable from `.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and
+`instance.json`.
