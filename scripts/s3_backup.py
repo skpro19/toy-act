@@ -16,6 +16,10 @@ Configuration:
     S3_BUCKET          Required destination bucket unless --bucket is passed.
     S3_ENDPOINT_URL    Optional endpoint for an S3-compatible service.
     AWS_REGION         Optional AWS region.
+    S3_CHECKPOINT_BASE Optional checkpoint component base path (default
+                       ``checkpoints/act_v1``).
+    S3_RUNS_BASE       Optional runs component base path (default
+                       ``runs/act_v1``).
 
 Boto3's standard credential chain supplies credentials. This includes IAM
 roles, AWS profiles, and the AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY variables.
@@ -48,8 +52,14 @@ from tqdm import tqdm
 
 
 COMPONENT_BASE: dict[str, tuple[Path, str]] = {
-    "checkpoints": (Path("checkpoints/act_v1"), "checkpoints/act_v1"),
-    "runs": (Path("runs/act_v1"), "runs/act_v1"),
+    "checkpoints": (
+        Path(os.environ.get("S3_CHECKPOINT_BASE", "checkpoints/act_v1")),
+        os.environ.get("S3_CHECKPOINT_BASE", "checkpoints/act_v1"),
+    ),
+    "runs": (
+        Path(os.environ.get("S3_RUNS_BASE", "runs/act_v1")),
+        os.environ.get("S3_RUNS_BASE", "runs/act_v1"),
+    ),
 }
 COMPONENT_DEFAULT = list(COMPONENT_BASE)
 

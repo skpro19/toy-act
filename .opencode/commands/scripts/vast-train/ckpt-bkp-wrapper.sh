@@ -3,9 +3,12 @@ set -o pipefail
 
 readonly CONTROL_DIR=/workspace/toy-act/.vast-train
 readonly PROJECT_DIR=/workspace/toy-act
-readonly CHECKPOINT_ROOT=checkpoints/act_v1
-readonly RUNS_ROOT=runs/act_v1
+readonly CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints/act_v1}"
+readonly RUNS_ROOT="${RUNS_ROOT:-runs/act_v1}"
 readonly BACKUP_LOG="$CONTROL_DIR/logs/backup.log"
+
+export S3_CHECKPOINT_BASE="$CHECKPOINT_ROOT"
+export S3_RUNS_BASE="$RUNS_ROOT"
 
 write_marker() {
   local path="$1"

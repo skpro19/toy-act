@@ -1,5 +1,5 @@
 ---
-description: Train ACT on a temporary Vast.ai RTX 4090 with S3 checkpoints
+description: Train ACT v1 on a temporary Vast.ai RTX 4090 with S3 checkpoints
 agent: build
 ---
 
@@ -34,7 +34,7 @@ including cleanup.
 | Remote project | `/workspace/toy-act` |
 | Remote control dir | `/workspace/toy-act/.vast-train` |
 | Remote TensorBoard | `127.0.0.1:6006` on the instance |
-| Instance label | `toy-act-train` |
+| Instance label | `toy-act-train-actv1` |
 | Local run state | `.vast-train-local/toy-act-<INSTANCE_ID>/` |
 
 ## Local run state
@@ -70,7 +70,7 @@ gitignored, so it is never committed. It holds:
      make the repository public; never embed tokens, keys, or credentials;
    - if the local working tree is dirty or local `dev` differs from `origin/dev`,
      warn the user that the clone will not include those local changes.
-3. Refuse to continue if an instance with the exact label `toy-act-train`
+3. Refuse to continue if an instance with the exact label `toy-act-train-actv1`
    already exists. Never destroy or reuse an unrelated instance.
 4. Search offers with the following hard filters:
 

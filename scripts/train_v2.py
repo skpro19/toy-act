@@ -26,11 +26,12 @@ from scripts.train_v1 import (
     seed_everything,
 )
 
-BATCH_SIZE = 200
-EPOCHS = 1
+BATCH_SIZE = 250
+EPOCHS = 200
 LR = 1e-4
 SEED = 0
 BETA = 10.0
+CHECKPOINT_EVERY = 10
 RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
 
@@ -179,6 +180,18 @@ def train() -> None:
             loss_epoch=avg_loss,
             normalization=normalization,
         )
+        if (epoch + 1) % CHECKPOINT_EVERY == 0:
+            snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
+            save_checkpoint(
+                path=snapshot_path,
+                epoch=epoch,
+                global_step=global_step,
+                model=model,
+                optimizer=optimizer,
+                loss_epoch=avg_loss,
+                normalization=normalization,
+            )
+            print(f"saved snapshot => {snapshot_path.resolve()}")
 
     writer.close()
 
