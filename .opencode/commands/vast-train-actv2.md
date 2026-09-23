@@ -93,7 +93,7 @@ gitignored, so it is never committed. It holds:
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
    and label. Reconcile the instance by exact label after every create attempt;
    do not rely only on parsing create-command output.
-7. Once an instance ID exists, the detached watcher described in step 17 owns an
+7. Once an instance ID exists, the detached watcher described in step 18 owns an
    EXIT trap that destroys that exact instance and verifies it no longer appears
    in `vastai show instances --raw`. The trap must run on both success and
    failure. Do not install the trap in the interactive agent shell: returning
@@ -102,7 +102,48 @@ gitignored, so it is never committed. It holds:
    Use a command-specific temporary `known_hosts` file populated by
    `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, rsync, and
    port-forwarding.
-9. Clone the pinned commit on the instance and verify it:
+9. Verify the provisioned hardware against the selected offer before cloning.
+   Treat the rental as provisional and collect:
+
+   ```bash
+   ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
+     -p $PORT root@$HOST '
+     set -e
+     lscpu
+     lscpu -e=CPU,CORE,SOCKET,ONLINE
+     nproc
+     grep "^Cpus_allowed_list:" /proc/self/status
+     grep "^MemTotal:" /proc/meminfo
+     test ! -r /sys/fs/cgroup/memory.max || cat /sys/fs/cgroup/memory.max
+     test ! -r /sys/fs/cgroup/cpu.max || cat /sys/fs/cgroup/cpu.max
+     test ! -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+     test ! -r /sys/fs/cgroup/cpu/cpu.cfs_period_us || cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
+     df -hT /workspace /
+     nvidia-smi --query-gpu=name,memory.total,power.limit,pcie.link.gen.max,pcie.link.width.max,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
+   '
+   ```
+
+   Compare the results with the selected offer and require:
+
+   | Check | Requirement |
+   |---|---|
+   | Physical cores | At least 8 allowed unique `(CORE, SOCKET)` pairs |
+   | CPU generation | Zen 3 or newer; reject EPYC 7001/7002 |
+   | CPU quota | At least 90% of advertised effective vCPUs |
+   | RAM | At least 32 GB allocated and consistent with the offer |
+   | GPU | Exactly one RTX 4090 with approximately 24 GB VRAM |
+   | Disk | At least 100 GB available at `/workspace` |
+   | Throttling | Thermal and power-brake slowdown inactive |
+
+   Count physical cores only from online CPU IDs in `Cpus_allowed_list`, then
+   count unique `(CORE, SOCKET)` pairs. Interpret finite cgroup CPU and memory
+   limits as the allocation gates; use visible memory only when the cgroup limit
+   is unlimited. Record the CPU model, logical CPUs, RAM, GPU identity, and disk
+   and list every mismatch with the offer. The SSH checks measure local compute
+   only; disk and network values still come from the offer. If a check fails,
+   destroy the instance directly (the watcher has not been launched yet) and try
+   the next-ranked offer; if none remain, stop and report.
+10. Clone the pinned commit on the instance and verify it:
 
    ```bash
    git clone --branch act-v2 --single-branch \
@@ -113,17 +154,17 @@ gitignored, so it is never committed. It holds:
    The clone already contains `scripts/`, the project files, and the
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
    `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`).
-10. On the instance, install `uv`, `awscli`, and `tmux`, then run
+11. On the instance, install `uv`, `awscli`, and `tmux`, then run
     `uv sync --frozen --only-group train` and verify `torch.cuda.is_available()`,
     printing the GPU name.
-11. Resolve `toy-pickplace-backup` credentials locally with
+12. Resolve `toy-pickplace-backup` credentials locally with
     `aws configure export-credentials`. Write them to a mode-600 temporary env
     file without printing them, append `AWS_REGION` and `S3_BUCKET`, transfer it
     as `/workspace/toy-act/.vast-train/s3-env.env` (creating
     `/workspace/toy-act/.vast-train` first), chmod it 600 remotely, and delete
     the local temporary file. Never transfer `VAST_API_KEY` or print AWS
     credentials.
-12. Ensure the dataset is in the bucket, then fetch it on the instance:
+13. Ensure the dataset is in the bucket, then fetch it on the instance:
     - upload `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` to
       `s3://toy-act/datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5`
       with the workload profile, skipping the upload when the object already
@@ -131,7 +172,7 @@ gitignored, so it is never committed. It holds:
     - on the instance, download it from that key to the same project-relative
       path using the transferred credentials and installed `awscli`;
     - verify the remote SHA-256 matches the local file before launching.
-13. Create the remote control directories
+14. Create the remote control directories
     `/workspace/toy-act/.vast-train/{logs,state}` and start TensorBoard in a
     detached tmux session named `tensorboard`:
 
@@ -145,7 +186,7 @@ gitignored, so it is never committed. It holds:
     Poll its endpoint from the instance for up to 12 attempts at five-second
     intervals and stop if the session exits or
     `http://127.0.0.1:6006/` never becomes reachable.
-14. Claim the lowest unused local workflow index with
+15. Claim the lowest unused local workflow index with
     `.opencode/commands/scripts/vast-train/local-wrapper-lease.sh allocate
     "toy-act-$INSTANCE_ID"`. It returns `INDEX`, `SSH_SESSION`, `TB_SESSION`, and
     `TB_PORT`. Create both local tmux wrappers:
@@ -165,7 +206,7 @@ gitignored, so it is never committed. It holds:
     Verify both sessions exist and that `http://localhost:$TB_PORT/` responds;
     print that URL. Stop before launching and report the relevant local tmux
     output if either wrapper fails.
-15. Start the durable runner in a detached tmux session named `train` and wait
+16. Start the durable runner in a detached tmux session named `train` and wait
     until it publishes readiness:
 
     ```bash
@@ -179,7 +220,7 @@ gitignored, so it is never committed. It holds:
     the `train` session to survive an additional five-second window. A missing
     tmux session is never a success signal; the persisted state files are
     authoritative.
-16. Start the backup wrapper in a detached tmux session named `ckpt-bkp`. Refuse
+17. Start the backup wrapper in a detached tmux session named `ckpt-bkp`. Refuse
     to start if the session already exists. Launch it with
     `CHECKPOINT_ROOT=checkpoints/act_v2` and `RUNS_ROOT=runs/act_v2` in the tmux
     session environment so it discovers the v2 directories. Poll for up to ten
@@ -192,7 +233,7 @@ gitignored, so it is never committed. It holds:
     excluded from synchronization because it is rewritten in place while training
     runs; only the immutable periodic snapshots are uploaded. An existing
     `last.pt` object, if present, is left untouched rather than deleted.
-17. Hand off to a detached local watcher and stop babysitting. Launch the
+18. Hand off to a detached local watcher and stop babysitting. Launch the
     watcher with `setsid`/`nohup` so it survives the interactive agent returning,
     and make the watcher own the step-7 EXIT trap and the local `VAST_API_KEY`.
     The watcher must:
@@ -213,7 +254,7 @@ gitignored, so it is never committed. It holds:
       write a report to `.vast-train-local/toy-act-<INSTANCE_ID>/report.txt`
       recording the run name, S3 URI, elapsed time, selected offer price, pinned
       commit, TensorBoard URL, and final cleanup status.
-18. Report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
+19. Report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
     URL, and the local run-state directory
     `.vast-train-local/toy-act-<INSTANCE_ID>/` (log at `watcher.log`, report at
     `report.txt`) to the user, then return without blocking on the training run.
