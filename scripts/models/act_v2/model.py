@@ -100,5 +100,30 @@ class ACTV2(nn.Module):
         decoded_actions = self.transformer_decoder(tgt=decoder_tgt, memory=memory)
 
         actions = self.action_head(decoded_actions)
-        
+
         return actions, mu, log_sigma_x2
+
+    @torch.no_grad()
+    def infer(self, proprio: torch.Tensor, img: torch.Tensor):
+        """Sample z from the CVAE prior (no action conditioning) and decode actions."""
+        B, _, _ = proprio.shape
+
+        proprio_tokens = self.proprio_encoder(proprio)
+        img_tokens = self.image_encoder(img)
+
+        # sample z from the prior
+        z = torch.zeros(B, 1, self.z_dims, device=proprio_tokens.device, dtype=proprio_tokens.dtype)
+
+        z_token = self.z_encoder(z)
+
+        src_transformer_encoder = torch.concat([img_tokens, proprio_tokens, z_token], dim=1)
+
+        memory = self.transformer_encoder(src_transformer_encoder)
+
+        decoder_tgt = get_se_1D(torch.zeros(B, self.k, self.d_model, dtype=memory.dtype, device=memory.device))
+
+        decoded_actions = self.transformer_decoder(tgt=decoder_tgt, memory=memory)
+
+        actions = self.action_head(decoded_actions)
+
+        return actions
