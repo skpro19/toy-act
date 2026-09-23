@@ -26,7 +26,7 @@ from scripts.train_v1 import (
     seed_everything,
 )
 
-BATCH_SIZE = 10
+BATCH_SIZE = 200
 EPOCHS = 1
 LR = 1e-4
 SEED = 0
@@ -74,7 +74,12 @@ def save_checkpoint(
 def train() -> None:
     seed_everything(seed=SEED)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is required for training but PyTorch could not initialize it. "
+            "Verify the NVIDIA driver and CUDA_VISIBLE_DEVICES before rerunning."
+        )
+    device = torch.device("cuda")
 
     can_ph_dataset = CanPhDataset(
         file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5",
@@ -112,6 +117,7 @@ def train() -> None:
     writer = SummaryWriter(log_dir=str(run_dir))
     print(f"seed => {SEED}")
     print(f"device => {device}")
+    print(f"gpu => {torch.cuda.get_device_name(device)}")
     print(f"tensorboard logs => {run_dir.resolve()}")
     print(f"checkpoints => {checkpoint_dir.resolve()}")
 
@@ -126,9 +132,9 @@ def train() -> None:
         for batch_dict in pbar:
             optimizer.zero_grad()
 
-            img = batch_dict["image"].to(device)
-            proprio = batch_dict["proprio"].to(device)
-            actions = batch_dict["target_actions"].to(device)
+            img = batch_dict["image"].to(device, non_blocking=True)
+            proprio = batch_dict["proprio"].to(device, non_blocking=True)
+            actions = batch_dict["target_actions"].to(device, non_blocking=True)
 
             pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
 
@@ -149,10 +155,20 @@ def train() -> None:
         avg_loss = epoch_loss / num_batches
         avg_l1_loss = epoch_l1_loss / num_batches
         avg_kl_loss = epoch_kl_loss / num_batches
+        avg_weighted_kl_loss = BETA * avg_kl_loss
+        if avg_loss > 0.0:
+            kl_fraction = avg_weighted_kl_loss / avg_loss
+            l1_fraction = avg_l1_loss / avg_loss
+        else:
+            kl_fraction = 0.0
+            l1_fraction = 0.0
 
         writer.add_scalar("train/loss", avg_loss, epoch)
         writer.add_scalar("train/l1_loss", avg_l1_loss, epoch)
         writer.add_scalar("train/kl_loss", avg_kl_loss, epoch)
+        writer.add_scalar("train/weighted_kl_loss", avg_weighted_kl_loss, epoch)
+        writer.add_scalar("train/kl_fraction", kl_fraction, epoch)
+        writer.add_scalar("train/l1_fraction", l1_fraction, epoch)
 
         save_checkpoint(
             path=checkpoint_dir / "last.pt",

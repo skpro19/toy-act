@@ -86,7 +86,7 @@ class ACTV2(nn.Module):
         # print(f"log_sigma_x2.shape => {log_sigma_x2.shape}")
 
         # sample z
-        z = mu + torch.randn(B, self.z_dims) * torch.sqrt(torch.exp(log_sigma_x2))
+        z = mu + torch.randn_like(mu) * torch.sqrt(torch.exp(log_sigma_x2))
         
         z_token = self.z_encoder(z)
 
