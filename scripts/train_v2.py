@@ -1,5 +1,7 @@
 """Training script for ACT v2 (CVAE + action chunking)."""
 
+import argparse
+import tomllib
 from pathlib import Path
 
 import torch
@@ -26,14 +28,31 @@ from scripts.train_v1 import (
     seed_everything,
 )
 
-BATCH_SIZE = 250
-EPOCHS = 1000
-LR = 1e-4
-SEED = 0
-BETA = 10.0
-CHECKPOINT_EVERY = 10
 RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
+
+CONFIG_KEYS = (
+    "batch_size",
+    "epochs",
+    "lr",
+    "seed",
+    "beta",
+    "checkpoint_every",
+)
+
+
+def load_config(*, path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"config file not found: {path}")
+
+    with path.open("rb") as file:
+        config = tomllib.load(file)
+
+    missing = [key for key in CONFIG_KEYS if key not in config]
+    if missing:
+        raise KeyError(f"config missing required keys: {missing}")
+
+    return config
 
 
 def get_kl_loss(*, mu: torch.Tensor, log_sigma_x2: torch.Tensor) -> torch.Tensor:
@@ -72,8 +91,12 @@ def save_checkpoint(
     )
 
 
-def train() -> None:
-    seed_everything(seed=SEED)
+def train(*, config: dict) -> None:
+    seed = config["seed"]
+    batch_size = config["batch_size"]
+    lr = config["lr"]
+
+    seed_everything(seed=seed)
 
     if not torch.cuda.is_available():
         raise RuntimeError(
@@ -86,15 +109,15 @@ def train() -> None:
         file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5",
         k=ACTION_CHUNK_SIZE,
     )
-    dataloader_generator = make_dataloader_generator(seed=SEED)
+    dataloader_generator = make_dataloader_generator(seed=seed)
     can_ph_dataloader = DataLoader(
         dataset=can_ph_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         pin_memory=device.type == "cuda",
         generator=dataloader_generator,
-        worker_init_fn=make_dataloader_worker_init_fn(base_seed=SEED),
+        worker_init_fn=make_dataloader_worker_init_fn(base_seed=seed),
     )
 
     model = ACTV2(
@@ -107,29 +130,29 @@ def train() -> None:
     ).to(device=device)
 
     l1_loss_fn = nn.L1Loss(reduction="mean")
-    optimizer = optim.Adam(params=model.parameters(), lr=LR, betas=(0.9, 0.999))
+    optimizer = optim.Adam(params=model.parameters(), lr=lr, betas=(0.9, 0.999))
     normalization = can_ph_dataset.normalization
 
-    run_name = make_run_name(batch_size=BATCH_SIZE, lr=LR)
+    run_name = make_run_name(batch_size=batch_size, lr=lr)
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(run_dir))
-    print(f"seed => {SEED}")
+    print(f"seed => {seed}")
     print(f"device => {device}")
     print(f"gpu => {torch.cuda.get_device_name(device)}")
     print(f"tensorboard logs => {run_dir.resolve()}")
     print(f"checkpoints => {checkpoint_dir.resolve()}")
 
     global_step = 0
-    for epoch in range(EPOCHS):
+    for epoch in range(config["epochs"]):
         epoch_loss = 0.0
         epoch_l1_loss = 0.0
         epoch_kl_loss = 0.0
         num_batches = 0
 
-        pbar = tqdm(can_ph_dataloader, desc=f"epoch {epoch + 1}/{EPOCHS}")
+        pbar = tqdm(can_ph_dataloader, desc=f"epoch {epoch + 1}/{config['epochs']}")
         for batch_dict in pbar:
             optimizer.zero_grad()
 
@@ -141,7 +164,7 @@ def train() -> None:
 
             l1_loss = l1_loss_fn(pred_actions, actions)
             kl_loss = get_kl_loss(mu=mu, log_sigma_x2=log_sigma_x2)
-            loss = l1_loss + BETA * kl_loss
+            loss = l1_loss + config["beta"] * kl_loss
 
             loss.backward()
             optimizer.step()
@@ -156,7 +179,7 @@ def train() -> None:
         avg_loss = epoch_loss / num_batches
         avg_l1_loss = epoch_l1_loss / num_batches
         avg_kl_loss = epoch_kl_loss / num_batches
-        avg_weighted_kl_loss = BETA * avg_kl_loss
+        avg_weighted_kl_loss = config["beta"] * avg_kl_loss
         if avg_loss > 0.0:
             kl_fraction = avg_weighted_kl_loss / avg_loss
             l1_fraction = avg_l1_loss / avg_loss
@@ -171,16 +194,7 @@ def train() -> None:
         writer.add_scalar("train/kl_fraction", kl_fraction, epoch)
         writer.add_scalar("train/l1_fraction", l1_fraction, epoch)
 
-        save_checkpoint(
-            path=checkpoint_dir / "last.pt",
-            epoch=epoch,
-            global_step=global_step,
-            model=model,
-            optimizer=optimizer,
-            loss_epoch=avg_loss,
-            normalization=normalization,
-        )
-        if (epoch + 1) % CHECKPOINT_EVERY == 0:
+        if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
             save_checkpoint(
                 path=snapshot_path,
@@ -197,4 +211,14 @@ def train() -> None:
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train ACT v2 (CVAE + action chunking).")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/act_v2.toml"),
+        help="path to the training hyperparameter config file",
+    )
+    args = parser.parse_args()
+
+    config = load_config(path=args.config)
+    train(config=config)
