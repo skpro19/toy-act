@@ -215,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/act_v2.toml"),
+        default=Path("configs/act_v2_bs250.toml"),
         help="path to the training hyperparameter config file",
     )
     args = parser.parse_args()
