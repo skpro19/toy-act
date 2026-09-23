@@ -27,7 +27,7 @@ from scripts.train_v1 import (
 )
 
 BATCH_SIZE = 250
-EPOCHS = 200
+EPOCHS = 1000
 LR = 1e-4
 SEED = 0
 BETA = 10.0
