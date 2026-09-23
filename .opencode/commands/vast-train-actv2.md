@@ -37,6 +37,18 @@ including cleanup.
 | Instance label | `toy-act-train-actv2` |
 | Local run state | `.vast-train-local/toy-act-<INSTANCE_ID>/` |
 
+## Config selection
+
+Before provisioning, ask the user which training config to use with the
+interactive question tool. List the up-to-5 most-recently-modified
+`configs/*.toml` files (newest first) and present each path as an option,
+defaulting to `configs/act_v2_bs250.toml`. Record the selected path as
+`CONFIG_PATH`, verify it
+exists and is git-tracked (`git ls-files --error-unmatch "$CONFIG_PATH"`), and
+read its `checkpoint_every` and `epochs` values into `CHECKPOINT_EVERY` and
+`EPOCHS` for use in the later verification step. The selected config is part of
+the git clone on the instance, so no extra transfer is needed.
+
 ## Local run state
 
 Create one `.vast-train-local/toy-act-<INSTANCE_ID>/` directory per instance at
@@ -212,6 +224,7 @@ gitignored, so it is never committed. It holds:
     ```bash
     tmux new-session -d -s train \
       -e TRAIN_MODULE=scripts.train_v2 \
+      -e TRAIN_CONFIG="$CONFIG_PATH" \
       'bash /workspace/toy-act/.opencode/commands/scripts/vast-train/runner.sh'
     ```
 
@@ -229,10 +242,8 @@ gitignored, so it is never committed. It holds:
     `state/backup-last-succeeded`; fail immediately if `state/backup-failed`
     appears or `ckpt-bkp` exits. The wrapper discovers the single run directory,
     then synchronizes `checkpoints/act_v2/<run>` and `runs/act_v2/<run>` to S3
-    every 120 seconds using `scripts/s3_backup.py`. The rolling `last.pt` is
-    excluded from synchronization because it is rewritten in place while training
-    runs; only the immutable periodic snapshots are uploaded. An existing
-    `last.pt` object, if present, is left untouched rather than deleted.
+    every 120 seconds using `scripts/s3_backup.py`. Training only writes immutable
+    periodic snapshots (`epoch_*.pt`), so every checkpoint is safe to upload.
 18. Hand off to a detached local watcher and stop babysitting. Launch the
     watcher with `setsid`/`nohup` so it survives the interactive agent returning,
     and make the watcher own the step-7 EXIT trap and the local `VAST_API_KEY`.
@@ -245,8 +256,8 @@ gitignored, so it is never committed. It holds:
       flooding;
     - on success, wait for `state/backup-final-succeeded`, read the run name from
       `state/run-name`, then verify locally through the workload profile that S3
-      contains every expected periodic snapshot for the current
-      `CHECKPOINT_EVERY` and `EPOCHS` values, using `scripts/s3_backup.py
+      contains every expected periodic snapshot for the `CHECKPOINT_EVERY` and
+      `EPOCHS` values read from the selected config, using `scripts/s3_backup.py
       has-files` with `S3_CHECKPOINT_BASE=checkpoints/act_v2`;
     - always destroy the instance through the EXIT trap and verify it no longer
       appears in `vastai show instances --raw`;

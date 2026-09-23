@@ -5,6 +5,7 @@ readonly CONTROL_DIR=/workspace/toy-act/.vast-train
 readonly PROJECT_DIR=/workspace/toy-act
 readonly LOG_FILE="$CONTROL_DIR/logs/training.log"
 readonly TRAIN_MODULE="${TRAIN_MODULE:-scripts.train_v1}"
+readonly TRAIN_CONFIG="${TRAIN_CONFIG:-}"
 
 write_marker() {
   local path="$1"
@@ -62,8 +63,10 @@ touch "$LOG_FILE" || exit 1
 
 setsid bash -c '
   set -o pipefail
+  config_args=()
+  test -n "${TRAIN_CONFIG:-}" && config_args=(--config "$TRAIN_CONFIG")
   /root/.local/bin/uv run --frozen --only-group train \
-    python -m "$TRAIN_MODULE" 2>&1 | tee -a "$1"
+    python -m "$TRAIN_MODULE" "${config_args[@]}" 2>&1 | tee -a "$1"
 ' bash "$LOG_FILE" &
 runner_pid=$!
 write_marker "${CONTROL_DIR}/state/runner-pid" "$runner_pid"
