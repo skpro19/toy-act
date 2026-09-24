@@ -40,6 +40,14 @@ CONFIG_KEYS = (
     "checkpoint_every",
 )
 
+ACTIVATION_HOOK_TAGS = (
+    "image_encoder",
+    "cvae_encoder",
+    "transformer_encoder",
+    "transformer_decoder",
+    "action_head",
+)
+
 
 def load_config(*, path: Path) -> dict:
     if not path.is_file():
@@ -53,6 +61,28 @@ def load_config(*, path: Path) -> dict:
         raise KeyError(f"config missing required keys: {missing}")
 
     return config
+
+
+def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], list]:
+    norms: dict[str, float] = {}
+    hook_targets = {
+        "image_encoder": model.image_encoder,
+        "cvae_encoder": model.cvae_encoder,
+        "transformer_encoder": model.transformer_encoder,
+        "transformer_decoder": model.transformer_decoder,
+        "action_head": model.action_head,
+    }
+    handles = []
+    for tag, module in hook_targets.items():
+        def make_hook(name: str):
+            def hook(_module, _inputs, output) -> None:
+                tensor = output[0] if isinstance(output, tuple) else output
+                norms[name] = tensor.detach().float().norm().item()
+
+            return hook
+
+        handles.append(module.register_forward_hook(make_hook(tag)))
+    return norms, handles
 
 
 def get_kl_loss(*, mu: torch.Tensor, log_sigma_x2: torch.Tensor) -> torch.Tensor:
@@ -131,6 +161,7 @@ def train(*, config: dict) -> None:
 
     l1_loss_fn = nn.L1Loss(reduction="mean")
     optimizer = optim.Adam(params=model.parameters(), lr=lr, betas=(0.9, 0.999))
+    activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
     normalization = can_ph_dataset.normalization
 
     run_name = make_run_name(batch_size=batch_size, lr=lr)
@@ -173,8 +204,14 @@ def train(*, config: dict) -> None:
             epoch_l1_loss += l1_loss.item()
             epoch_kl_loss += kl_loss.item()
             num_batches += 1
-            global_step += 1
             pbar.set_postfix(loss=f"{loss.item():.4f}")
+            for tag in ACTIVATION_HOOK_TAGS:
+                writer.add_scalar(
+                    f"debug/activations/{tag}",
+                    activation_norms[tag],
+                    global_step,
+                )
+            global_step += 1
 
         avg_loss = epoch_loss / num_batches
         avg_l1_loss = epoch_l1_loss / num_batches
@@ -207,6 +244,8 @@ def train(*, config: dict) -> None:
             )
             print(f"saved snapshot => {snapshot_path.resolve()}")
 
+    for handle in activation_hook_handles:
+        handle.remove()
     writer.close()
 
 
