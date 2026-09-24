@@ -15,6 +15,7 @@ from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
+    JOINT_DIMS,
     N_HEAD,
     NUM_LAYERS,
     PROPRIO_DIMS,
@@ -22,10 +23,14 @@ from scripts.models.act_v2.config import (
 )
 from scripts.models.act_v2.model import ACTV2
 from scripts.train_v1 import (
+    compute_adam_moment_norms,
+    compute_global_l2_norm,
+    compute_global_update_norm,
     make_dataloader_generator,
     make_dataloader_worker_init_fn,
     make_run_name,
     seed_everything,
+    snapshot_parameters,
 )
 
 RUNS_ROOT = Path("runs/act_v2")
@@ -161,8 +166,11 @@ def train(*, config: dict) -> None:
 
     l1_loss_fn = nn.L1Loss(reduction="mean")
     optimizer = optim.Adam(params=model.parameters(), lr=lr, betas=(0.9, 0.999))
+    model_parameters = list(model.parameters())
     activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
     normalization = can_ph_dataset.normalization
+    action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
+    action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
     run_name = make_run_name(batch_size=batch_size, lr=lr)
     run_dir = RUNS_ROOT / run_name
@@ -198,13 +206,87 @@ def train(*, config: dict) -> None:
             loss = l1_loss + config["beta"] * kl_loss
 
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=float("inf"),
+            ).item()
+            params_before = snapshot_parameters(parameters=model_parameters)
             optimizer.step()
 
-            epoch_loss += loss.item()
-            epoch_l1_loss += l1_loss.item()
-            epoch_kl_loss += kl_loss.item()
+            batch_loss = loss.item()
+            batch_l1_loss = l1_loss.item()
+            batch_kl_loss = kl_loss.item()
+            batch_weighted_kl_loss = config["beta"] * batch_kl_loss
+
+            epoch_loss += batch_loss
+            epoch_l1_loss += batch_l1_loss
+            epoch_kl_loss += batch_kl_loss
             num_batches += 1
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            pbar.set_postfix(loss=f"{batch_loss:.4f}")
+
+            with torch.no_grad():
+                learning_rate = optimizer.param_groups[0]["lr"]
+                adam_exp_avg_norm, adam_exp_avg_sq_norm = compute_adam_moment_norms(
+                    optimizer=optimizer,
+                )
+                param_norm = compute_global_l2_norm(tensors=model_parameters)
+                update_norm = compute_global_update_norm(
+                    parameters=model_parameters,
+                    before=params_before,
+                )
+
+                pred_physical = pred_actions.detach() * action_std + action_mean
+                target_physical = actions * action_std + action_mean
+                pred_joint = pred_physical[..., :JOINT_DIMS]
+                pred_gripper = pred_physical[..., JOINT_DIMS:]
+                target_joint = target_physical[..., :JOINT_DIMS]
+                target_gripper = target_physical[..., JOINT_DIMS:]
+
+                batch_l1_joint = l1_loss_fn(pred_joint, target_joint).item()
+                batch_l1_gripper = l1_loss_fn(pred_gripper, target_gripper).item()
+
+                pred_joint_min = pred_joint.min().item()
+                pred_joint_max = pred_joint.max().item()
+                pred_gripper_min = pred_gripper.min().item()
+                pred_gripper_max = pred_gripper.max().item()
+                target_joint_min = target_joint.min().item()
+                target_joint_max = target_joint.max().item()
+                target_gripper_min = target_gripper.min().item()
+                target_gripper_max = target_gripper.max().item()
+
+                mu_norm = mu.detach().float().norm().item()
+                log_sigma_x2_mean = log_sigma_x2.detach().mean().item()
+                sigma_mean = log_sigma_x2.detach().exp().mean().item()
+
+                if batch_loss > 0.0:
+                    batch_kl_fraction = batch_weighted_kl_loss / batch_loss
+                else:
+                    batch_kl_fraction = 0.0
+
+            writer.add_scalar("debug/batch_loss", batch_loss, global_step)
+            writer.add_scalar("debug/l1_loss", batch_l1_loss, global_step)
+            writer.add_scalar("debug/kl_loss", batch_kl_loss, global_step)
+            writer.add_scalar("debug/weighted_kl_loss", batch_weighted_kl_loss, global_step)
+            writer.add_scalar("debug/grad_norm_global", grad_norm, global_step)
+            writer.add_scalar("debug/param_norm_global", param_norm, global_step)
+            writer.add_scalar("debug/update_norm_global", update_norm, global_step)
+            writer.add_scalar("debug/lr", learning_rate, global_step)
+            writer.add_scalar("debug/adam_exp_avg_norm", adam_exp_avg_norm, global_step)
+            writer.add_scalar("debug/adam_exp_avg_sq_norm", adam_exp_avg_sq_norm, global_step)
+            writer.add_scalar("debug/l1_joint", batch_l1_joint, global_step)
+            writer.add_scalar("debug/l1_gripper", batch_l1_gripper, global_step)
+            writer.add_scalar("debug/pred_min_joint", pred_joint_min, global_step)
+            writer.add_scalar("debug/pred_max_joint", pred_joint_max, global_step)
+            writer.add_scalar("debug/pred_min_gripper", pred_gripper_min, global_step)
+            writer.add_scalar("debug/pred_max_gripper", pred_gripper_max, global_step)
+            writer.add_scalar("debug/target_min_joint", target_joint_min, global_step)
+            writer.add_scalar("debug/target_max_joint", target_joint_max, global_step)
+            writer.add_scalar("debug/target_min_gripper", target_gripper_min, global_step)
+            writer.add_scalar("debug/target_max_gripper", target_gripper_max, global_step)
+            writer.add_scalar("debug/kl_fraction", batch_kl_fraction, global_step)
+            writer.add_scalar("debug/mu_norm", mu_norm, global_step)
+            writer.add_scalar("debug/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
+            writer.add_scalar("debug/sigma_mean", sigma_mean, global_step)
             for tag in ACTIVATION_HOOK_TAGS:
                 writer.add_scalar(
                     f"debug/activations/{tag}",
@@ -219,17 +301,14 @@ def train(*, config: dict) -> None:
         avg_weighted_kl_loss = config["beta"] * avg_kl_loss
         if avg_loss > 0.0:
             kl_fraction = avg_weighted_kl_loss / avg_loss
-            l1_fraction = avg_l1_loss / avg_loss
         else:
             kl_fraction = 0.0
-            l1_fraction = 0.0
 
         writer.add_scalar("train/loss", avg_loss, epoch)
         writer.add_scalar("train/l1_loss", avg_l1_loss, epoch)
         writer.add_scalar("train/kl_loss", avg_kl_loss, epoch)
         writer.add_scalar("train/weighted_kl_loss", avg_weighted_kl_loss, epoch)
         writer.add_scalar("train/kl_fraction", kl_fraction, epoch)
-        writer.add_scalar("train/l1_fraction", l1_fraction, epoch)
 
         if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
