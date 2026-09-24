@@ -125,11 +125,15 @@ gitignored, so it is never committed. It holds:
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
    and `INSTANCE_LABEL`. Reconcile the instance by exact label after every
    create attempt; do not rely only on parsing create-command output.
-7. Once an instance ID exists, the detached watcher described in step 18 owns an
-   EXIT trap that destroys that exact instance and verifies it no longer appears
-   in `vastai show instances --raw`. The trap must run on both success and
-   failure. Do not install the trap in the interactive agent shell: returning
-   from the agent must not destroy the running instance.
+7. Once an instance ID exists, the detached watcher described in step 18 owns
+   cleanup for that exact instance. Before training reaches `run-status=running`,
+   setup failures may destroy the instance. After the watcher has observed
+   `run-status=running`, it may destroy the instance only after it has read a
+   remote `state/completed` or `state/failed` marker. An EXIT trap, signal,
+   local suspend, SSH failure, Vast API failure, or missing tmux session must
+   never bypass this terminal-state gate. Do not install cleanup in the
+   interactive agent shell: returning from the agent must not destroy the
+   running instance.
 8. Poll the exact instance record for up to ten minutes. Require
    `actual_status=running` before accepting `vastai ssh-url INSTANCE_ID` or
    attempting SSH. If `status_msg` reports a GPU error or says the instance is
@@ -274,12 +278,25 @@ gitignored, so it is never committed. It holds:
     periodic snapshots (`epoch_*.pt`), so every checkpoint is safe to upload.
 18. Hand off to a detached local watcher and stop babysitting. Launch the
     watcher with `setsid`/`nohup` so it survives the interactive agent returning,
-    and make the watcher own the step-7 EXIT trap and the local `VAST_API_KEY`.
+    and make the watcher own step-7 cleanup and the local `VAST_API_KEY`.
     The watcher must:
-    - poll every 30 seconds, retrying transient SSH failures, and treat a
-      stopped `train` session without a terminal state as a failure;
-    - treat `state/completed` as success and `state/failed` as a reported
-      failure;
+    - record `RUN_STARTED=yes` only after it reads remote `state/run-status` as
+      `running`, and initialize `TERMINAL_CONFIRMED=no`;
+    - poll every 30 seconds; if SSH fails, log the failure, sleep, and retry
+      indefinitely without changing the run outcome or entering cleanup. Use a
+      fixed interval, so no failure counter is needed. A suspended local machine
+      freezes the watcher; after wake-up it must continue the same retry loop and
+      resume normal monitoring when SSH recovers;
+    - treat `vastai show instances` command failures, malformed output, and an
+      unavailable API as unknown state, never as proof that the instance or
+      training disappeared. Vast instance queries are diagnostic only after
+      `RUN_STARTED=yes` and cannot authorize cleanup;
+    - set `TERMINAL_CONFIRMED=yes` only after a successful SSH probe directly
+      reads remote `state/completed` or `state/failed`. Treat `completed` as
+      success and `failed` as a reported training failure;
+    - if the `train` tmux session is missing without either terminal marker,
+      log the inconsistency and continue polling for the runner to publish a
+      terminal marker. Do not infer training failure from the missing session;
     - show concise progress from `.vast-train/logs/training.log` without
       flooding;
     - on success, wait for `state/backup-final-succeeded`, read the run name from
@@ -287,8 +304,15 @@ gitignored, so it is never committed. It holds:
       contains every expected periodic snapshot for the `CHECKPOINT_EVERY` and
       `EPOCHS` values read from the selected config, using `scripts/s3_backup.py
       has-files` with `S3_CHECKPOINT_BASE=checkpoints/act_v2`;
-    - always destroy the instance through the EXIT trap and verify it no longer
-      appears in `vastai show instances --raw`;
+    - before every `vastai destroy`, enforce the cleanup gate again: setup may
+      destroy before `RUN_STARTED=yes`; after that point require
+      `TERMINAL_CONFIRMED=yes`. If the gate is closed, log that cleanup was
+      refused and leave the instance untouched. Apply this gate inside the EXIT
+      trap too, so normal `kill`, HUP, shell errors, and unexpected exits cannot
+      destroy an unconfirmed running job. Connectivity errors must remain in the
+      monitoring loop rather than reaching the EXIT trap;
+    - after an authorized destroy, verify the exact instance no longer appears
+      in `vastai show instances --raw`;
     - write its PID to `.vast-train-local/toy-act-<INSTANCE_ID>/watcher.pid` and
       write a report to `.vast-train-local/toy-act-<INSTANCE_ID>/report.txt`
       recording the run name, S3 URI, elapsed time, selected offer price, pinned
@@ -299,16 +323,20 @@ gitignored, so it is never committed. It holds:
     `report.txt`) to the user, then return without blocking on the training run.
     Do not keep polling training progress in the interactive session.
 
-If setup fails, destroy the instance through the watcher trap (or directly when
-no watcher was started yet) and report the failure. If training fails, the
-watcher waits briefly for the backup wrapper's best-effort final sync, preserves
-already uploaded checkpoints, reports the failure and S3 prefix, and still
-destroys the instance.
+If setup fails before remote `run-status=running`, destroy the instance through
+the watcher cleanup (or directly when no watcher was started yet) and report the
+failure. If remote `state/failed` appears after training starts, the watcher sets
+`TERMINAL_CONFIRMED=yes`, waits briefly for the backup wrapper's best-effort
+final sync, preserves already uploaded checkpoints, reports the failure and S3
+prefix, and destroys the instance. Connectivity failures without a remote
+terminal marker remain in the monitoring loop and never authorize destruction.
 
 Because `VAST_API_KEY` is deliberately never placed on the instance, the
-instance cannot clean itself up. If the local machine sleeps, reboots, or the
-watcher is hard-killed, cleanup cannot run and the instance will leak; in that
-case check `vastai show instances --raw` and destroy the labeled instance
-manually. The instance id and exact `INSTANCE_LABEL` needed for that cleanup are
-recoverable from `.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and
-`instance.json`.
+instance cannot clean itself up. Local suspend pauses the watcher while remote
+training and backup continue; after wake-up, the watcher resumes polling and
+must recover through the SSH retry path. A reboot or hard-killed watcher cannot
+resume automatically and can leak the instance; in that case use `setup.env` to
+restart monitoring, or check `vastai show instances --raw` and destroy the
+labeled instance manually after verifying training state. The instance id and
+exact `INSTANCE_LABEL` are recoverable from
+`.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and `instance.json`.
