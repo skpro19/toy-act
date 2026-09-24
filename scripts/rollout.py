@@ -38,6 +38,8 @@ from scripts.models.act_v1.config import (
     N_HEAD,
     PROPRIO_DIMS,
 )
+from scripts.models.act_v2.config import Z_DIMS
+from scripts.models.act_v2.model import ACTV2
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
@@ -60,6 +62,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         required=True,
         help="path to ACTV1 checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--model-version",
+        choices=("act_v1", "act_v2"),
+        default="act_v1",
+        help="checkpoint model architecture",
     )
     parser.add_argument(
         "--dataset",
@@ -194,14 +202,25 @@ def load_model(
     *,
     checkpoint_path: Path,
     device: torch.device,
-) -> tuple[ACTV1, NormalizationStats]:
-    model = ACTV1(
-        d_model=D_MODEL,
-        nhead=N_HEAD,
-        num_layers=NUM_LAYERS,
-        action_chunk_size=ACTION_CHUNK_SIZE,
-        proprio_dims=PROPRIO_DIMS,
-    )
+    model_version: str,
+) -> tuple[ACTV1 | ACTV2, NormalizationStats]:
+    if model_version == "act_v2":
+        model = ACTV2(
+            d_model=D_MODEL,
+            nhead=N_HEAD,
+            num_layers=NUM_LAYERS,
+            z_dims=Z_DIMS,
+            action_chunk_size=ACTION_CHUNK_SIZE,
+            proprio_dims=PROPRIO_DIMS,
+        )
+    else:
+        model = ACTV1(
+            d_model=D_MODEL,
+            nhead=N_HEAD,
+            num_layers=NUM_LAYERS,
+            action_chunk_size=ACTION_CHUNK_SIZE,
+            proprio_dims=PROPRIO_DIMS,
+        )
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     model.to(device=device)
@@ -271,7 +290,7 @@ def denormalize_action(
 
 def predict_action_chunk(
     *,
-    model: ACTV1,
+    model: ACTV1 | ACTV2,
     obs: dict,
     device: torch.device,
     normalization: NormalizationStats,
@@ -287,7 +306,10 @@ def predict_action_chunk(
         normalization=normalization,
     )
     with torch.no_grad():
-        pred = model(img_tensor=img_tensor, proprio_tensor=proprio_tensor)
+        if isinstance(model, ACTV2):
+            pred = model.infer(proprio=proprio_tensor, img=img_tensor)
+        else:
+            pred = model(img_tensor=img_tensor, proprio_tensor=proprio_tensor)
     return denormalize_action(action=pred[0].detach().cpu().numpy(), normalization=normalization)
 
 
@@ -317,7 +339,7 @@ def set_render_window_title(*, env, title: str | None) -> None:
 
 def run_rollout(
     *,
-    model: ACTV1,
+    model: ACTV1 | ACTV2,
     env,
     device: torch.device,
     normalization: NormalizationStats,
@@ -437,7 +459,11 @@ def main() -> None:
         on_screen=on_screen,
         write_video=write_video,
     )
-    model, normalization = load_model(checkpoint_path=args.checkpoint, device=device)
+    model, normalization = load_model(
+        checkpoint_path=args.checkpoint,
+        device=device,
+        model_version=args.model_version,
+    )
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
     rollouts: list[dict[str, float | int | bool]] = []
