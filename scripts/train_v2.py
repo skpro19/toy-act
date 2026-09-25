@@ -71,6 +71,7 @@ def load_config(*, path: Path) -> dict:
 
     config.setdefault("beta_start", 0.0)
     config.setdefault("beta_warmup_epochs", 0)
+    config.setdefault("use_z", True)
 
     if config["beta_warmup_epochs"] < 0:
         raise ValueError(f"beta_warmup_epochs must be >= 0, got {config['beta_warmup_epochs']}")
@@ -209,6 +210,7 @@ def train(*, config: dict) -> None:
         z_dims=Z_DIMS,
         proprio_dims=PROPRIO_DIMS,
         action_chunk_size=ACTION_CHUNK_SIZE,
+        use_z=config["use_z"],
     ).to(device=device)
 
     action_loss_kind = config["action_loss"]
@@ -253,6 +255,7 @@ def train(*, config: dict) -> None:
     else:
         print(f"beta => {beta:g}")
     print(f"action_loss => {action_loss_kind}")
+    print(f"use_z => {config['use_z']}")
 
     global_step = 0
     for epoch in range(config["epochs"]):
