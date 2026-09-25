@@ -3,6 +3,7 @@
 import argparse
 import json
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -29,7 +30,6 @@ from scripts.train_v1 import (
     compute_global_update_norm,
     make_dataloader_generator,
     make_dataloader_worker_init_fn,
-    make_run_name,
     seed_everything,
     snapshot_parameters,
 )
@@ -55,6 +55,19 @@ ACTIVATION_HOOK_TAGS = (
     "transformer_encoder",
     "transformer_decoder",
     "action_head",
+)
+
+RUN_NAME_FIELDS = (
+    ("batch_size", "bs", "{:d}"),
+    ("lr", "lr", "{:.0e}"),
+    ("beta", "beta", "{:g}"),
+    ("beta_start", "beta_start", "{:g}"),
+    ("beta_warmup_epochs", "wu", "{:d}"),
+    ("epochs", "ep", "{:d}"),
+    ("seed", "seed", "{:d}"),
+    ("checkpoint_every", "ckpt", "{:d}"),
+    ("use_z", "use_z", "{:d}"),
+    ("action_loss", "", "{:s}"),
 )
 
 
@@ -114,6 +127,32 @@ def save_run_config(*, run_dir: Path, run_name: str, config: dict) -> None:
     with path.open("w") as file:
         json.dump(payload, file, indent=2, sort_keys=True)
         file.write("\n")
+
+
+def format_config_value(*, value: object, template: str) -> str:
+    if isinstance(value, bool):
+        value = int(value)
+    rendered = template.format(value)
+    return "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in rendered
+    )
+
+
+def make_run_name(*, config: dict) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    parts = [timestamp]
+    known_keys: set[str] = set()
+    for key, label, template in RUN_NAME_FIELDS:
+        if key not in config:
+            continue
+        known_keys.add(key)
+        rendered = format_config_value(value=config[key], template=template)
+        parts.append(f"{label}{rendered}" if label else rendered)
+    for key in sorted(key for key in config if key not in known_keys):
+        rendered = format_config_value(value=config[key], template="{}")
+        parts.append(f"{key}-{rendered}")
+    return "_".join(parts)
 
 
 def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], list]:
@@ -227,15 +266,7 @@ def train(*, config: dict) -> None:
     beta_start = config["beta_start"]
     beta_warmup_epochs = config["beta_warmup_epochs"]
 
-    run_name = make_run_name(
-        batch_size=batch_size,
-        lr=lr,
-        beta=beta,
-        epochs=config["epochs"],
-    )
-    if beta_warmup_epochs > 0:
-        run_name = f"{run_name}_wu{beta_warmup_epochs}"
-    run_name = f"{run_name}_{action_loss_kind}"
+    run_name = make_run_name(config=config)
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
