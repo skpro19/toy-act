@@ -181,7 +181,12 @@ def train(*, config: dict) -> None:
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
-    run_name = make_run_name(batch_size=batch_size, lr=lr)
+    run_name = make_run_name(
+        batch_size=batch_size,
+        lr=lr,
+        beta=config["beta"],
+        epochs=config["epochs"],
+    )
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)

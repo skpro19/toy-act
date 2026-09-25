@@ -69,9 +69,20 @@ def make_dataloader_generator(*, seed: int) -> torch.Generator:
     return generator
 
 
-def make_run_name(*, batch_size: int, lr: float) -> str:
+def make_run_name(
+    *,
+    batch_size: int,
+    lr: float,
+    beta: float | None = None,
+    epochs: int | None = None,
+) -> str:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{timestamp}_bs{batch_size}_lr{lr:.0e}"
+    parts = [timestamp, f"bs{batch_size}", f"lr{lr:.0e}"]
+    if beta is not None:
+        parts.append(f"beta{beta:g}")
+    if epochs is not None:
+        parts.append(f"ep{epochs}")
+    return "_".join(parts)
 
 
 def save_checkpoint(
@@ -203,7 +214,7 @@ def train() -> None:
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
-    run_name = make_run_name(batch_size=BATCH_SIZE, lr=LR)
+    run_name = make_run_name(batch_size=BATCH_SIZE, lr=LR, epochs=EPOCHS)
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     anomalies_dir = run_dir / "anomalies"
