@@ -1,3 +1,4 @@
+action_loss = "l1"
 batch_size = 250
 epochs = 1
 lr = 1e-4

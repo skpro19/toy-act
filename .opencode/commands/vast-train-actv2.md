@@ -58,7 +58,7 @@ cleanup.
 Before provisioning, ask the user which training config to use with the
 interactive question tool. List the up-to-5 most-recently-modified
 `configs/*.toml` files (newest first) and present each path as an option,
-defaulting to `configs/act_v2_bs250.toml`. Record the selected path as
+defaulting to `configs/act_v2_bs250_l1.toml`. Record the selected path as
 `CONFIG_PATH`, verify it
 exists and is git-tracked (`git ls-files --error-unmatch "$CONFIG_PATH"`), and
 read its `checkpoint_every` and `epochs` values into `CHECKPOINT_EVERY` and

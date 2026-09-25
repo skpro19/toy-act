@@ -16,7 +16,7 @@ BACKUP_SUFFIX = ".pre_namespace_remap.bak"
 
 EPOCH_TRAIN_TAG_MAP = {
     "train/loss": "epoch_metrics/loss",
-    "train/l1_loss": "epoch_metrics/l1_loss",
+    "train/l1_loss": "epoch_metrics/action_loss",
     "train/kl_loss": "epoch_metrics/kl_loss",
     "train/weighted_kl_loss": "epoch_metrics/weighted_kl_loss",
     "train/kl_fraction": "epoch_metrics/kl_fraction",
@@ -25,7 +25,7 @@ EPOCH_TRAIN_TAG_MAP = {
 
 DEBUG_SCALAR_TAG_MAP = {
     "debug/batch_loss": "batch_metrics/loss",
-    "debug/l1_loss": "batch_metrics/l1_loss",
+    "debug/l1_loss": "batch_metrics/action_loss",
     "debug/kl_loss": "batch_metrics/kl_loss",
     "debug/weighted_kl_loss": "batch_metrics/weighted_kl_loss",
     "debug/kl_fraction": "batch_metrics/kl_fraction",

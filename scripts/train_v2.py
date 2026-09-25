@@ -38,6 +38,7 @@ RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
 
 CONFIG_KEYS = (
+    "action_loss",
     "batch_size",
     "epochs",
     "lr",
@@ -45,6 +46,8 @@ CONFIG_KEYS = (
     "beta",
     "checkpoint_every",
 )
+
+ACTION_LOSS_CHOICES = frozenset({"l1", "l2"})
 
 ACTIVATION_HOOK_TAGS = (
     "image_encoder",
@@ -74,7 +77,21 @@ def load_config(*, path: Path) -> dict:
     if config["beta_start"] < 0.0:
         raise ValueError(f"beta_start must be >= 0, got {config['beta_start']}")
 
+    action_loss = config["action_loss"]
+    if action_loss not in ACTION_LOSS_CHOICES:
+        allowed = ", ".join(sorted(ACTION_LOSS_CHOICES))
+        raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
+
     return config
+
+
+def make_action_loss_fn(*, action_loss: str) -> nn.Module:
+    if action_loss == "l1":
+        return nn.L1Loss(reduction="mean")
+    if action_loss == "l2":
+        return nn.MSELoss(reduction="mean")
+    allowed = ", ".join(sorted(ACTION_LOSS_CHOICES))
+    raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
 
 
 def beta_at_epoch(
@@ -194,7 +211,9 @@ def train(*, config: dict) -> None:
         action_chunk_size=ACTION_CHUNK_SIZE,
     ).to(device=device)
 
-    l1_loss_fn = nn.L1Loss(reduction="mean")
+    action_loss_kind = config["action_loss"]
+    action_loss_fn = make_action_loss_fn(action_loss=action_loss_kind)
+    denorm_l1_fn = nn.L1Loss(reduction="mean")
     optimizer = optim.Adam(params=model.parameters(), lr=lr, betas=(0.9, 0.999))
     model_parameters = list(model.parameters())
     activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
@@ -214,6 +233,7 @@ def train(*, config: dict) -> None:
     )
     if beta_warmup_epochs > 0:
         run_name = f"{run_name}_wu{beta_warmup_epochs}"
+    run_name = f"{run_name}_{action_loss_kind}"
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -232,6 +252,7 @@ def train(*, config: dict) -> None:
         )
     else:
         print(f"beta => {beta:g}")
+    print(f"action_loss => {action_loss_kind}")
 
     global_step = 0
     for epoch in range(config["epochs"]):
@@ -242,7 +263,7 @@ def train(*, config: dict) -> None:
             beta_warmup_epochs=beta_warmup_epochs,
         )
         epoch_loss = 0.0
-        epoch_l1_loss = 0.0
+        epoch_action_loss = 0.0
         epoch_kl_loss = 0.0
         num_batches = 0
 
@@ -256,9 +277,9 @@ def train(*, config: dict) -> None:
 
             pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
 
-            l1_loss = l1_loss_fn(pred_actions, actions)
+            action_loss = action_loss_fn(pred_actions, actions)
             kl_loss = get_kl_loss(mu=mu, log_sigma_x2=log_sigma_x2)
-            loss = l1_loss + beta_t * kl_loss
+            loss = action_loss + beta_t * kl_loss
 
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -269,12 +290,12 @@ def train(*, config: dict) -> None:
             optimizer.step()
 
             batch_loss = loss.item()
-            batch_l1_loss = l1_loss.item()
+            batch_action_loss = action_loss.item()
             batch_kl_loss = kl_loss.item()
             batch_weighted_kl_loss = beta_t * batch_kl_loss
 
             epoch_loss += batch_loss
-            epoch_l1_loss += batch_l1_loss
+            epoch_action_loss += batch_action_loss
             epoch_kl_loss += batch_kl_loss
             num_batches += 1
             pbar.set_postfix(loss=f"{batch_loss:.4f}")
@@ -297,8 +318,8 @@ def train(*, config: dict) -> None:
                 target_joint = target_physical[..., :JOINT_DIMS]
                 target_gripper = target_physical[..., JOINT_DIMS:]
 
-                batch_l1_joint = l1_loss_fn(pred_joint, target_joint).item()
-                batch_l1_gripper = l1_loss_fn(pred_gripper, target_gripper).item()
+                batch_l1_joint = denorm_l1_fn(pred_joint, target_joint).item()
+                batch_l1_gripper = denorm_l1_fn(pred_gripper, target_gripper).item()
 
                 pred_joint_min = pred_joint.min().item()
                 pred_joint_max = pred_joint.max().item()
@@ -319,7 +340,7 @@ def train(*, config: dict) -> None:
                     batch_kl_fraction = 0.0
 
             writer.add_scalar("batch_metrics/loss", batch_loss, global_step)
-            writer.add_scalar("batch_metrics/l1_loss", batch_l1_loss, global_step)
+            writer.add_scalar("batch_metrics/action_loss", batch_action_loss, global_step)
             writer.add_scalar("batch_metrics/kl_loss", batch_kl_loss, global_step)
             writer.add_scalar("batch_metrics/weighted_kl_loss", batch_weighted_kl_loss, global_step)
             writer.add_scalar("batch_metrics/kl_fraction", batch_kl_fraction, global_step)
@@ -352,7 +373,7 @@ def train(*, config: dict) -> None:
             global_step += 1
 
         avg_loss = epoch_loss / num_batches
-        avg_l1_loss = epoch_l1_loss / num_batches
+        avg_action_loss = epoch_action_loss / num_batches
         avg_kl_loss = epoch_kl_loss / num_batches
         avg_weighted_kl_loss = beta_t * avg_kl_loss
         if avg_loss > 0.0:
@@ -361,7 +382,7 @@ def train(*, config: dict) -> None:
             kl_fraction = 0.0
 
         writer.add_scalar("epoch_metrics/loss", avg_loss, epoch)
-        writer.add_scalar("epoch_metrics/l1_loss", avg_l1_loss, epoch)
+        writer.add_scalar("epoch_metrics/action_loss", avg_action_loss, epoch)
         writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
@@ -390,7 +411,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/act_v2_bs250.toml"),
+        default=Path("configs/act_v2_bs250_l1.toml"),
         help="path to the training hyperparameter config file",
     )
     args = parser.parse_args()

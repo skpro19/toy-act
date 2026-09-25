@@ -1,6 +1,7 @@
+action_loss = "l1"
 batch_size = 250
-epochs = 400
+epochs = 1000
 lr = 1e-4
 seed = 0
-beta = 1.0
+beta = 10.0
 checkpoint_every = 10
