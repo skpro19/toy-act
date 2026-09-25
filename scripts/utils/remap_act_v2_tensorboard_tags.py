@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-from tensorboard.backend.event_processing.event_file_loader import EventFileLoader
+from tensorboard.backend.event_processing.event_file_loader import LegacyEventFileLoader
 from tensorboard.compat.proto import event_pb2
 from tensorboard.summary.writer.event_file_writer import EventFileWriter
 
@@ -99,40 +99,59 @@ def ensure_backup(*, event_path: Path) -> Path:
     return path
 
 
-def rewrite_event_file(*, event_path: Path, dry_run: bool) -> dict:
-    source_path = ensure_backup(event_path=event_path) if not dry_run else event_path
+def inspect_event_file(*, event_path: Path) -> dict:
     event_count = 0
     tag_changes = 0
+    tensor_values = 0
     unknown_tags: set[str] = set()
 
-    if dry_run:
-        for event in EventFileLoader(str(source_path)).Load():
-            event_count += 1
-            if event.summary:
-                for value in event.summary.value:
-                    new_tag = remap_scalar_tag(tag=value.tag)
-                    if new_tag != value.tag:
-                        tag_changes += 1
-                    if any(new_tag.startswith(prefix) for prefix in FORBIDDEN_TAG_PREFIXES):
-                        unknown_tags.add(value.tag)
+    for event in LegacyEventFileLoader(str(event_path)).Load():
+        event_count += 1
+        if event.summary:
+            for value in event.summary.value:
+                if value.HasField("tensor"):
+                    tensor_values += 1
+                new_tag = remap_scalar_tag(tag=value.tag)
+                if new_tag != value.tag:
+                    tag_changes += 1
+                if any(new_tag.startswith(prefix) for prefix in FORBIDDEN_TAG_PREFIXES):
+                    unknown_tags.add(value.tag)
+
+    return {
+        "event_count": event_count,
+        "tag_changes": tag_changes,
+        "tensor_values": tensor_values,
+        "unknown_tags": unknown_tags,
+    }
+
+
+def rewrite_event_file(*, event_path: Path, dry_run: bool) -> dict:
+    source_path = event_path
+    inspection = inspect_event_file(event_path=source_path)
+    existing_backup = backup_path(event_path=event_path)
+    if inspection["tensor_values"] > 0 and existing_backup.is_file():
+        source_path = existing_backup
+        inspection = inspect_event_file(event_path=source_path)
+
+    event_count = inspection["event_count"]
+    tag_changes = inspection["tag_changes"]
+    unknown_tags = inspection["unknown_tags"]
+
+    if dry_run or tag_changes == 0:
         return {
             "event_path": str(event_path),
             "event_count": event_count,
             "tag_changes": tag_changes,
             "unknown_tags": sorted(unknown_tags),
-            "dry_run": True,
+            "dry_run": dry_run,
+            "skipped": tag_changes == 0,
         }
 
+    source_path = ensure_backup(event_path=event_path)
     with tempfile.TemporaryDirectory() as temp_dir:
         writer = EventFileWriter(logdir=temp_dir, flush_secs=1)
-        for event in EventFileLoader(str(source_path)).Load():
-            event_count += 1
-            remapped_event, changes = remap_summary_event(event=event)
-            tag_changes += changes
-            if remapped_event.summary:
-                for value in remapped_event.summary.value:
-                    if any(value.tag.startswith(prefix) for prefix in FORBIDDEN_TAG_PREFIXES):
-                        unknown_tags.add(value.tag)
+        for event in LegacyEventFileLoader(str(source_path)).Load():
+            remapped_event, _ = remap_summary_event(event=event)
             writer.add_event(remapped_event)
         writer.close()
 
@@ -150,6 +169,7 @@ def rewrite_event_file(*, event_path: Path, dry_run: bool) -> dict:
         "tag_changes": tag_changes,
         "unknown_tags": sorted(unknown_tags),
         "dry_run": False,
+        "skipped": False,
     }
 
 
@@ -190,14 +210,21 @@ def remap_extracted_metrics(*, metrics_path: Path, dry_run: bool) -> dict:
     }
 
 
-def collect_scalar_tags(*, event_path: Path) -> set[str]:
-    tags: set[str] = set()
-    for event in EventFileLoader(str(event_path)).Load():
-        if not event.summary:
-            continue
-        for value in event.summary.value:
-            tags.add(value.tag)
-    return tags
+def verify_with_accumulator(*, event_path: Path) -> dict:
+    accumulator = EventAccumulator(str(event_path), size_guidance={"scalars": 0})
+    accumulator.Reload()
+    scalar_tags = sorted(accumulator.Tags().get("scalars", []))
+    tensor_tags = sorted(accumulator.Tags().get("tensors", []))
+    tags = sorted(set(scalar_tags) | set(tensor_tags))
+    stale = [tag for tag in tags if tag.startswith("debug/")]
+    return {
+        "event_path": event_path.name,
+        "scalar_tags": scalar_tags,
+        "tensor_tags": tensor_tags,
+        "tags": tags,
+        "stale_debug_tags": stale,
+        "ok": not stale and not tensor_tags,
+    }
 
 
 def verify_run_dir(*, run_dir: Path) -> dict:
@@ -206,11 +233,19 @@ def verify_run_dir(*, run_dir: Path) -> dict:
     event_files = event_file_paths(run_dir=run_dir)
 
     for event_path in event_files:
-        tags = collect_scalar_tags(event_path=event_path)
+        accumulator = verify_with_accumulator(event_path=event_path)
+        tags = set(accumulator["tags"])
         tag_union |= tags
-        stale = sorted(tag for tag in tags if tag.startswith("debug/"))
-        if stale:
-            issues.append(f"{event_path.name}: stale debug tags {stale}")
+        if accumulator["stale_debug_tags"]:
+            issues.append(
+                f"{event_path.name}: stale debug tags "
+                f"{accumulator['stale_debug_tags']}"
+            )
+        if accumulator["tensor_tags"]:
+            issues.append(
+                f"{event_path.name}: metrics classified as tensors "
+                f"{accumulator['tensor_tags']}"
+            )
         non_idempotent = sorted(
             tag for tag in tags if remap_scalar_tag(tag=tag) != tag
         )
@@ -236,19 +271,6 @@ def verify_run_dir(*, run_dir: Path) -> dict:
         "tags": sorted(tag_union),
         "ok": not issues,
         "issues": issues,
-    }
-
-
-def verify_with_accumulator(*, event_path: Path) -> dict:
-    accumulator = EventAccumulator(str(event_path), size_guidance={"scalars": 0})
-    accumulator.Reload()
-    tags = sorted(accumulator.Tags().get("scalars", []))
-    stale = [tag for tag in tags if tag.startswith("debug/")]
-    return {
-        "event_path": event_path.name,
-        "scalar_tags": len(tags),
-        "stale_debug_tags": stale,
-        "ok": not stale,
     }
 
 
@@ -307,11 +329,6 @@ def main() -> None:
                 all_ok = False
                 for issue in summary["issues"]:
                     print(f"  - {issue}")
-            for event_path in event_file_paths(run_dir=run_dir):
-                acc = verify_with_accumulator(event_path=event_path)
-                if not acc["ok"]:
-                    all_ok = False
-                    print(f"  - accumulator {acc['event_path']}: {acc['stale_debug_tags']}")
         if not all_ok:
             sys.exit(1)
         return
@@ -322,7 +339,8 @@ def main() -> None:
             if "event_path" in result:
                 print(
                     f"  events: {Path(result['event_path']).name} "
-                    f"count={result['event_count']} tag_changes={result['tag_changes']}",
+                    f"count={result['event_count']} tag_changes={result['tag_changes']} "
+                    f"skipped={result['skipped']}",
                 )
                 if result["unknown_tags"]:
                     print(f"  WARNING unknown tags: {result['unknown_tags']}")
