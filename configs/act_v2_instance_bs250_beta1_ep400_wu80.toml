@@ -1,0 +1,8 @@
+batch_size = 250
+epochs = 400
+lr = 1e-4
+seed = 0
+beta = 1.0
+beta_start = 0.0
+beta_warmup_epochs = 80
+checkpoint_every = 10
