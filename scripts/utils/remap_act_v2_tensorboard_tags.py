@@ -15,20 +15,20 @@ from tensorboard.summary.writer.event_file_writer import EventFileWriter
 BACKUP_SUFFIX = ".pre_namespace_remap.bak"
 
 EPOCH_TRAIN_TAG_MAP = {
-    "train/loss": "train/epoch/loss",
-    "train/l1_loss": "train/epoch/l1_loss",
-    "train/kl_loss": "train/epoch/kl_loss",
-    "train/weighted_kl_loss": "train/epoch/weighted_kl_loss",
-    "train/kl_fraction": "train/epoch/kl_fraction",
-    "train/l1_fraction": "train/epoch/l1_fraction",
+    "train/loss": "epoch_metrics/loss",
+    "train/l1_loss": "epoch_metrics/l1_loss",
+    "train/kl_loss": "epoch_metrics/kl_loss",
+    "train/weighted_kl_loss": "epoch_metrics/weighted_kl_loss",
+    "train/kl_fraction": "epoch_metrics/kl_fraction",
+    "train/l1_fraction": "epoch_metrics/l1_fraction",
 }
 
 DEBUG_SCALAR_TAG_MAP = {
-    "debug/batch_loss": "train/batch/loss",
-    "debug/l1_loss": "train/batch/l1_loss",
-    "debug/kl_loss": "train/batch/kl_loss",
-    "debug/weighted_kl_loss": "train/batch/weighted_kl_loss",
-    "debug/kl_fraction": "train/batch/kl_fraction",
+    "debug/batch_loss": "batch_metrics/loss",
+    "debug/l1_loss": "batch_metrics/l1_loss",
+    "debug/kl_loss": "batch_metrics/kl_loss",
+    "debug/weighted_kl_loss": "batch_metrics/weighted_kl_loss",
+    "debug/kl_fraction": "batch_metrics/kl_fraction",
     "debug/grad_norm_global": "optimizer/grad_norm_global",
     "debug/param_norm_global": "optimizer/param_norm_global",
     "debug/update_norm_global": "optimizer/update_norm_global",
@@ -60,6 +60,10 @@ def remap_scalar_tag(*, tag: str) -> str:
         return f"activations/{tag.removeprefix('debug/activations/')}"
     if tag in EPOCH_TRAIN_TAG_MAP:
         return EPOCH_TRAIN_TAG_MAP[tag]
+    if tag.startswith("train/batch/"):
+        return f"batch_metrics/{tag.removeprefix('train/batch/')}"
+    if tag.startswith("train/epoch/"):
+        return f"epoch_metrics/{tag.removeprefix('train/epoch/')}"
     return tag
 
 

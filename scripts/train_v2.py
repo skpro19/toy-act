@@ -273,11 +273,11 @@ def train(*, config: dict) -> None:
                 else:
                     batch_kl_fraction = 0.0
 
-            writer.add_scalar("train/batch/loss", batch_loss, global_step)
-            writer.add_scalar("train/batch/l1_loss", batch_l1_loss, global_step)
-            writer.add_scalar("train/batch/kl_loss", batch_kl_loss, global_step)
-            writer.add_scalar("train/batch/weighted_kl_loss", batch_weighted_kl_loss, global_step)
-            writer.add_scalar("train/batch/kl_fraction", batch_kl_fraction, global_step)
+            writer.add_scalar("batch_metrics/loss", batch_loss, global_step)
+            writer.add_scalar("batch_metrics/l1_loss", batch_l1_loss, global_step)
+            writer.add_scalar("batch_metrics/kl_loss", batch_kl_loss, global_step)
+            writer.add_scalar("batch_metrics/weighted_kl_loss", batch_weighted_kl_loss, global_step)
+            writer.add_scalar("batch_metrics/kl_fraction", batch_kl_fraction, global_step)
             writer.add_scalar("optimizer/grad_norm_global", grad_norm, global_step)
             writer.add_scalar("optimizer/param_norm_global", param_norm, global_step)
             writer.add_scalar("optimizer/update_norm_global", update_norm, global_step)
@@ -314,11 +314,11 @@ def train(*, config: dict) -> None:
         else:
             kl_fraction = 0.0
 
-        writer.add_scalar("train/epoch/loss", avg_loss, epoch)
-        writer.add_scalar("train/epoch/l1_loss", avg_l1_loss, epoch)
-        writer.add_scalar("train/epoch/kl_loss", avg_kl_loss, epoch)
-        writer.add_scalar("train/epoch/weighted_kl_loss", avg_weighted_kl_loss, epoch)
-        writer.add_scalar("train/epoch/kl_fraction", kl_fraction, epoch)
+        writer.add_scalar("epoch_metrics/loss", avg_loss, epoch)
+        writer.add_scalar("epoch_metrics/l1_loss", avg_l1_loss, epoch)
+        writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
+        writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
+        writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
 
         if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"

@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from scripts.dataset import CanPhDataset
+from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
@@ -60,7 +60,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model(*, checkpoint_path: Path, device: torch.device) -> ACTV2:
+def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
+    if "normalization" not in checkpoint:
+        raise KeyError("checkpoint is missing 'normalization' stats")
+    stats = checkpoint["normalization"]
+    return NormalizationStats(
+        proprio_mean=np.asarray(stats["proprio_mean"], dtype=np.float32),
+        proprio_std=np.asarray(stats["proprio_std"], dtype=np.float32),
+        action_mean=np.asarray(stats["action_mean"], dtype=np.float32),
+        action_std=np.asarray(stats["action_std"], dtype=np.float32),
+    )
+
+
+def load_model(*, checkpoint_path: Path, device: torch.device) -> tuple[ACTV2, NormalizationStats]:
     model = ACTV2(
         d_model=D_MODEL,
         nhead=N_HEAD,
@@ -73,7 +85,8 @@ def load_model(*, checkpoint_path: Path, device: torch.device) -> ACTV2:
     model.load_state_dict(checkpoint["model"])
     model.to(device=device)
     model.eval()
-    return model
+    normalization = normalization_from_checkpoint(checkpoint=checkpoint)
+    return model, normalization
 
 
 def make_subset_indices(*, num_samples: int, limit: int, seed: int) -> np.ndarray:
@@ -259,7 +272,7 @@ def compute_summary(*, latents: dict) -> dict:
 
 
 def make_output_dir(*, output_root: Path, run_name: str, checkpoint_path: Path) -> Path:
-    output_dir = output_root / run_name / checkpoint_path.stem
+    output_dir = output_root / run_name / checkpoint_path.stem / "latent"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
@@ -308,7 +321,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device => {device}")
 
-    model = load_model(checkpoint_path=args.checkpoint, device=device)
+    model, _ = load_model(checkpoint_path=args.checkpoint, device=device)
     dataset = CanPhDataset(file=str(args.dataset), k=ACTION_CHUNK_SIZE)
 
     indices = make_subset_indices(num_samples=len(dataset), limit=args.limit, seed=args.seed)
