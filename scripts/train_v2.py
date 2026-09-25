@@ -66,7 +66,28 @@ def load_config(*, path: Path) -> dict:
     if missing:
         raise KeyError(f"config missing required keys: {missing}")
 
+    config.setdefault("beta_start", 0.0)
+    config.setdefault("beta_warmup_epochs", 0)
+
+    if config["beta_warmup_epochs"] < 0:
+        raise ValueError(f"beta_warmup_epochs must be >= 0, got {config['beta_warmup_epochs']}")
+    if config["beta_start"] < 0.0:
+        raise ValueError(f"beta_start must be >= 0, got {config['beta_start']}")
+
     return config
+
+
+def beta_at_epoch(
+    *,
+    epoch: int,
+    beta_start: float,
+    beta: float,
+    beta_warmup_epochs: int,
+) -> float:
+    if beta_warmup_epochs <= 0 or epoch >= beta_warmup_epochs:
+        return beta
+    progress = epoch / beta_warmup_epochs
+    return beta_start + (beta - beta_start) * progress
 
 
 def save_run_config(*, run_dir: Path, run_name: str, config: dict) -> None:
@@ -181,12 +202,18 @@ def train(*, config: dict) -> None:
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
+    beta = config["beta"]
+    beta_start = config["beta_start"]
+    beta_warmup_epochs = config["beta_warmup_epochs"]
+
     run_name = make_run_name(
         batch_size=batch_size,
         lr=lr,
-        beta=config["beta"],
+        beta=beta,
         epochs=config["epochs"],
     )
+    if beta_warmup_epochs > 0:
+        run_name = f"{run_name}_wu{beta_warmup_epochs}"
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -198,9 +225,22 @@ def train(*, config: dict) -> None:
     print(f"gpu => {torch.cuda.get_device_name(device)}")
     print(f"tensorboard logs => {run_dir.resolve()}")
     print(f"checkpoints => {checkpoint_dir.resolve()}")
+    if beta_warmup_epochs > 0:
+        print(
+            f"beta schedule => linear warmup from {beta_start:g} to {beta:g} "
+            f"over epochs 1–{beta_warmup_epochs}"
+        )
+    else:
+        print(f"beta => {beta:g}")
 
     global_step = 0
     for epoch in range(config["epochs"]):
+        beta_t = beta_at_epoch(
+            epoch=epoch,
+            beta_start=beta_start,
+            beta=beta,
+            beta_warmup_epochs=beta_warmup_epochs,
+        )
         epoch_loss = 0.0
         epoch_l1_loss = 0.0
         epoch_kl_loss = 0.0
@@ -218,7 +258,7 @@ def train(*, config: dict) -> None:
 
             l1_loss = l1_loss_fn(pred_actions, actions)
             kl_loss = get_kl_loss(mu=mu, log_sigma_x2=log_sigma_x2)
-            loss = l1_loss + config["beta"] * kl_loss
+            loss = l1_loss + beta_t * kl_loss
 
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -231,7 +271,7 @@ def train(*, config: dict) -> None:
             batch_loss = loss.item()
             batch_l1_loss = l1_loss.item()
             batch_kl_loss = kl_loss.item()
-            batch_weighted_kl_loss = config["beta"] * batch_kl_loss
+            batch_weighted_kl_loss = beta_t * batch_kl_loss
 
             epoch_loss += batch_loss
             epoch_l1_loss += batch_l1_loss
@@ -283,6 +323,7 @@ def train(*, config: dict) -> None:
             writer.add_scalar("batch_metrics/kl_loss", batch_kl_loss, global_step)
             writer.add_scalar("batch_metrics/weighted_kl_loss", batch_weighted_kl_loss, global_step)
             writer.add_scalar("batch_metrics/kl_fraction", batch_kl_fraction, global_step)
+            writer.add_scalar("hyperparams/beta", beta_t, global_step)
             writer.add_scalar("optimizer/grad_norm_global", grad_norm, global_step)
             writer.add_scalar("optimizer/param_norm_global", param_norm, global_step)
             writer.add_scalar("optimizer/update_norm_global", update_norm, global_step)
@@ -313,7 +354,7 @@ def train(*, config: dict) -> None:
         avg_loss = epoch_loss / num_batches
         avg_l1_loss = epoch_l1_loss / num_batches
         avg_kl_loss = epoch_kl_loss / num_batches
-        avg_weighted_kl_loss = config["beta"] * avg_kl_loss
+        avg_weighted_kl_loss = beta_t * avg_kl_loss
         if avg_loss > 0.0:
             kl_fraction = avg_weighted_kl_loss / avg_loss
         else:
@@ -324,6 +365,7 @@ def train(*, config: dict) -> None:
         writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
+        writer.add_scalar("epoch_metrics/beta", beta_t, epoch)
 
         if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
