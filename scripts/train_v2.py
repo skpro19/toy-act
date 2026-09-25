@@ -273,33 +273,33 @@ def train(*, config: dict) -> None:
                 else:
                     batch_kl_fraction = 0.0
 
-            writer.add_scalar("debug/batch_loss", batch_loss, global_step)
-            writer.add_scalar("debug/l1_loss", batch_l1_loss, global_step)
-            writer.add_scalar("debug/kl_loss", batch_kl_loss, global_step)
-            writer.add_scalar("debug/weighted_kl_loss", batch_weighted_kl_loss, global_step)
-            writer.add_scalar("debug/grad_norm_global", grad_norm, global_step)
-            writer.add_scalar("debug/param_norm_global", param_norm, global_step)
-            writer.add_scalar("debug/update_norm_global", update_norm, global_step)
-            writer.add_scalar("debug/lr", learning_rate, global_step)
-            writer.add_scalar("debug/adam_exp_avg_norm", adam_exp_avg_norm, global_step)
-            writer.add_scalar("debug/adam_exp_avg_sq_norm", adam_exp_avg_sq_norm, global_step)
-            writer.add_scalar("debug/l1_joint", batch_l1_joint, global_step)
-            writer.add_scalar("debug/l1_gripper", batch_l1_gripper, global_step)
-            writer.add_scalar("debug/pred_min_joint", pred_joint_min, global_step)
-            writer.add_scalar("debug/pred_max_joint", pred_joint_max, global_step)
-            writer.add_scalar("debug/pred_min_gripper", pred_gripper_min, global_step)
-            writer.add_scalar("debug/pred_max_gripper", pred_gripper_max, global_step)
-            writer.add_scalar("debug/target_min_joint", target_joint_min, global_step)
-            writer.add_scalar("debug/target_max_joint", target_joint_max, global_step)
-            writer.add_scalar("debug/target_min_gripper", target_gripper_min, global_step)
-            writer.add_scalar("debug/target_max_gripper", target_gripper_max, global_step)
-            writer.add_scalar("debug/kl_fraction", batch_kl_fraction, global_step)
-            writer.add_scalar("debug/mu_norm", mu_norm, global_step)
-            writer.add_scalar("debug/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
-            writer.add_scalar("debug/sigma_mean", sigma_mean, global_step)
+            writer.add_scalar("train/batch/loss", batch_loss, global_step)
+            writer.add_scalar("train/batch/l1_loss", batch_l1_loss, global_step)
+            writer.add_scalar("train/batch/kl_loss", batch_kl_loss, global_step)
+            writer.add_scalar("train/batch/weighted_kl_loss", batch_weighted_kl_loss, global_step)
+            writer.add_scalar("train/batch/kl_fraction", batch_kl_fraction, global_step)
+            writer.add_scalar("optimizer/grad_norm_global", grad_norm, global_step)
+            writer.add_scalar("optimizer/param_norm_global", param_norm, global_step)
+            writer.add_scalar("optimizer/update_norm_global", update_norm, global_step)
+            writer.add_scalar("optimizer/lr", learning_rate, global_step)
+            writer.add_scalar("optimizer/adam_exp_avg_norm", adam_exp_avg_norm, global_step)
+            writer.add_scalar("optimizer/adam_exp_avg_sq_norm", adam_exp_avg_sq_norm, global_step)
+            writer.add_scalar("denorm_l1/joint", batch_l1_joint, global_step)
+            writer.add_scalar("denorm_l1/gripper", batch_l1_gripper, global_step)
+            writer.add_scalar("ranges/pred_min_joint", pred_joint_min, global_step)
+            writer.add_scalar("ranges/pred_max_joint", pred_joint_max, global_step)
+            writer.add_scalar("ranges/pred_min_gripper", pred_gripper_min, global_step)
+            writer.add_scalar("ranges/pred_max_gripper", pred_gripper_max, global_step)
+            writer.add_scalar("ranges/target_min_joint", target_joint_min, global_step)
+            writer.add_scalar("ranges/target_max_joint", target_joint_max, global_step)
+            writer.add_scalar("ranges/target_min_gripper", target_gripper_min, global_step)
+            writer.add_scalar("ranges/target_max_gripper", target_gripper_max, global_step)
+            writer.add_scalar("latent/mu_norm", mu_norm, global_step)
+            writer.add_scalar("latent/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
+            writer.add_scalar("latent/sigma_mean", sigma_mean, global_step)
             for tag in ACTIVATION_HOOK_TAGS:
                 writer.add_scalar(
-                    f"debug/activations/{tag}",
+                    f"activations/{tag}",
                     activation_norms[tag],
                     global_step,
                 )
@@ -314,11 +314,11 @@ def train(*, config: dict) -> None:
         else:
             kl_fraction = 0.0
 
-        writer.add_scalar("train/loss", avg_loss, epoch)
-        writer.add_scalar("train/l1_loss", avg_l1_loss, epoch)
-        writer.add_scalar("train/kl_loss", avg_kl_loss, epoch)
-        writer.add_scalar("train/weighted_kl_loss", avg_weighted_kl_loss, epoch)
-        writer.add_scalar("train/kl_fraction", kl_fraction, epoch)
+        writer.add_scalar("train/epoch/loss", avg_loss, epoch)
+        writer.add_scalar("train/epoch/l1_loss", avg_l1_loss, epoch)
+        writer.add_scalar("train/epoch/kl_loss", avg_kl_loss, epoch)
+        writer.add_scalar("train/epoch/weighted_kl_loss", avg_weighted_kl_loss, epoch)
+        writer.add_scalar("train/epoch/kl_fraction", kl_fraction, epoch)
 
         if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
