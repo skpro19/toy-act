@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -207,6 +208,20 @@ def make_plots(*, output_dir: Path, latents: dict) -> None:
     plot_dim_boxplot(mu=mu, path=output_dir / "mu_boxplot.png")
 
 
+def collect_mu_norm_hist(
+    *,
+    output_root: Path,
+    run_name: str,
+    checkpoint_path: Path,
+    output_dir: Path,
+) -> Path:
+    aggregate_dir = output_root / run_name / "mu_norm_hist"
+    aggregate_dir.mkdir(parents=True, exist_ok=True)
+    destination = aggregate_dir / f"{checkpoint_path.stem}.png"
+    shutil.copy2(output_dir / "mu_norm_hist.png", destination)
+    return destination
+
+
 def compute_summary(*, latents: dict) -> dict:
     mu = latents["mu"]
     log_sigma_x2 = latents["log_sigma_x2"]
@@ -309,6 +324,12 @@ def main() -> None:
 
     save_artifact(output_dir=output_dir, latents=latents)
     make_plots(output_dir=output_dir, latents=latents)
+    collect_mu_norm_hist(
+        output_root=args.output_dir,
+        run_name=run_name,
+        checkpoint_path=args.checkpoint,
+        output_dir=output_dir,
+    )
 
     summary = compute_summary(latents=latents)
     with (output_dir / "summary.json").open("w") as file:
