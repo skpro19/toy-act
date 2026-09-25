@@ -303,7 +303,10 @@ gitignored, so it is never committed. It holds:
       `state/run-name`, then verify locally through the workload profile that S3
       contains every expected periodic snapshot for the `CHECKPOINT_EVERY` and
       `EPOCHS` values read from the selected config, using `scripts/s3_backup.py
-      has-files` with `S3_CHECKPOINT_BASE=checkpoints/act_v2`;
+      has-files` with `S3_CHECKPOINT_BASE=checkpoints/act_v2` and
+      `--components checkpoints`; also verify the run's recorded `config.json`
+      reached S3 using `has-files` with `S3_RUNS_BASE=runs/act_v2` and
+      `--components runs`;
     - before every `vastai destroy`, enforce the cleanup gate again: setup may
       destroy before `RUN_STARTED=yes`; after that point require
       `TERMINAL_CONFIRMED=yes`. If the gate is closed, log that cleanup was

@@ -1,6 +1,7 @@
 """Training script for ACT v2 (CVAE + action chunking)."""
 
 import argparse
+import json
 import tomllib
 from pathlib import Path
 
@@ -66,6 +67,14 @@ def load_config(*, path: Path) -> dict:
         raise KeyError(f"config missing required keys: {missing}")
 
     return config
+
+
+def save_run_config(*, run_dir: Path, run_name: str, config: dict) -> None:
+    payload = {"run_name": run_name, "config": config}
+    path = run_dir / "config.json"
+    with path.open("w") as file:
+        json.dump(payload, file, indent=2, sort_keys=True)
+        file.write("\n")
 
 
 def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], list]:
@@ -177,6 +186,7 @@ def train(*, config: dict) -> None:
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    save_run_config(run_dir=run_dir, run_name=run_name, config=config)
     writer = SummaryWriter(log_dir=str(run_dir))
     print(f"seed => {seed}")
     print(f"device => {device}")
