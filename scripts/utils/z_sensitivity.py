@@ -137,6 +137,7 @@ def collect_sensitivity(
                     img_tokens=img_tokens,
                     proprio_tokens=proprio_tokens,
                     z=z,
+                    use_z=True,
                 )
                 pred_rows[name].append(pred.detach().cpu().numpy())
 

@@ -81,12 +81,20 @@ class ACTV2(nn.Module):
         *,
         img_tokens: torch.Tensor,
         proprio_tokens: torch.Tensor,
-        z: torch.Tensor,
+        z: torch.Tensor | None = None,
+        use_z: bool | None = None,
     ) -> torch.Tensor:
-        """Decode an action chunk from pre-encoded image/proprio tokens and an explicit z."""
-        z_token = self.z_encoder(z)
+        """Decode an action chunk from pre-encoded image/proprio tokens."""
+        if use_z is None:
+            use_z = self.use_z
 
-        src_transformer_encoder = torch.concat([img_tokens, proprio_tokens, z_token], dim=1)
+        if use_z:
+            if z is None:
+                raise ValueError("z is required when use_z is True")
+            z_token = self.z_encoder(z)
+            src_transformer_encoder = torch.concat([img_tokens, proprio_tokens, z_token], dim=1)
+        else:
+            src_transformer_encoder = torch.concat([img_tokens, proprio_tokens], dim=1)
 
         memory = self.transformer_encoder(src_transformer_encoder)
 
@@ -99,12 +107,24 @@ class ACTV2(nn.Module):
 
         return self.action_head(decoded_actions)
 
-    def decode(self, *, proprio: torch.Tensor, img: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-        """Decode an action chunk for an observation using an explicit z."""
+    def decode(
+        self,
+        *,
+        proprio: torch.Tensor,
+        img: torch.Tensor,
+        z: torch.Tensor | None = None,
+        use_z: bool | None = None,
+    ) -> torch.Tensor:
+        """Decode an action chunk for an observation."""
         proprio_tokens = self.proprio_encoder(proprio)
         img_tokens = self.image_encoder(img)
 
-        return self.decode_from_tokens(img_tokens=img_tokens, proprio_tokens=proprio_tokens, z=z)
+        return self.decode_from_tokens(
+            img_tokens=img_tokens,
+            proprio_tokens=proprio_tokens,
+            z=z,
+            use_z=use_z,
+        )
 
     def forward(self, proprio: torch.Tensor, actions: torch.Tensor, img: torch.Tensor):
 
@@ -114,24 +134,25 @@ class ACTV2(nn.Module):
         # mu, log(sigma-squared)
         mu, log_sigma_x2 = self.posterior(proprio=proprio, actions=actions)
 
+        z = None
         if self.use_z:
             z = mu + torch.randn_like(mu) * torch.sqrt(torch.exp(log_sigma_x2))
-        else:
-            z = torch.zeros_like(mu)
 
         actions = self.decode_from_tokens(
             img_tokens=img_tokens,
             proprio_tokens=proprio_tokens,
             z=z,
+            use_z=self.use_z,
         )
 
         return actions, mu, log_sigma_x2
 
     @torch.no_grad()
     def infer(self, proprio: torch.Tensor, img: torch.Tensor):
-        """Sample z from the CVAE prior (no action conditioning) and decode actions."""
-        B, _, _ = proprio.shape
+        """Decode actions at inference time (prior z when use_z is enabled)."""
+        z = None
+        if self.use_z:
+            B, _, _ = proprio.shape
+            z = torch.zeros(B, 1, self.z_dims, device=proprio.device, dtype=proprio.dtype)
 
-        z = torch.zeros(B, 1, self.z_dims, device=proprio.device, dtype=proprio.dtype)
-
-        return self.decode(proprio=proprio, img=img, z=z)
+        return self.decode(proprio=proprio, img=img, z=z, use_z=self.use_z)
