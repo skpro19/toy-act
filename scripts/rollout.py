@@ -12,6 +12,10 @@ Examples:
     uv run python scripts/rollout.py \\
         --checkpoint checkpoints/act_v1/.../last.pt \\
         --video replays/rollout.mp4 --n-rollouts 5 --seed 0
+
+    uv run python scripts/rollout.py \\
+        --model-version act_v2 --no-use-z \\
+        --checkpoint checkpoints/act_v2/.../last.pt --n-rollouts 20
 """
 
 from __future__ import annotations
@@ -68,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         choices=("act_v1", "act_v2"),
         default="act_v1",
         help="checkpoint model architecture",
+    )
+    parser.add_argument(
+        "--use-z",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="act_v2: decode with latent z (use --no-use-z for no-z checkpoints)",
     )
     parser.add_argument(
         "--dataset",
@@ -203,6 +213,7 @@ def load_model(
     checkpoint_path: Path,
     device: torch.device,
     model_version: str,
+    use_z: bool,
 ) -> tuple[ACTV1 | ACTV2, NormalizationStats]:
     if model_version == "act_v2":
         model = ACTV2(
@@ -212,6 +223,7 @@ def load_model(
             z_dims=Z_DIMS,
             action_chunk_size=ACTION_CHUNK_SIZE,
             proprio_dims=PROPRIO_DIMS,
+            use_z=use_z,
         )
     else:
         model = ACTV1(
@@ -463,7 +475,10 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         device=device,
         model_version=args.model_version,
+        use_z=args.use_z,
     )
+    if args.model_version == "act_v2":
+        print(f"use_z => {args.use_z}")
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
     rollouts: list[dict[str, float | int | bool]] = []
