@@ -1,0 +1,10 @@
+action_loss = "l2"
+batch_size = 250
+epochs = 200
+lr = 1e-4
+seed = 0
+beta = 0.0
+beta_start = 0.0
+beta_warmup_epochs = 0
+checkpoint_every = 10
+use_z = false
