@@ -41,7 +41,8 @@ Notes:
 - do not use `dataclass` decorator
 - do not use Ruff for linting or formatting
 - use keyword-only arguments for functions/methods with multiple parameters: put a bare `*` after `self` (or after positional-only args), then name every remaining parameter so callers must pass them by keyword (e.g. `def append_step(self, *, obs: ..., action: ...) -> None`)
-- keep a function's return annotation on the `def` line when it fits (e.g. `def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:`); do not place it on a separate line
+- keep a function's return annotation on the `def` line when the whole signature fits one line (e.g. `def make_dagger_round_seeds(*, seed: int, rounds: int) -> list[int]:`)
+- when a signature is broken across lines, put the closing `)`, `-> ReturnType`, and `:` on the **same line as the last parameter** — not on a separate line (e.g. `    epoch: int,) -> None:` with a trailing comma, or `    epoch: int) -> None:` without one); this keeps the full header collapsible as one block in the editor
 
 ## Vast.ai Administration
 - API key is in `.env` as `VAST_API_KEY`

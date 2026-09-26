@@ -113,15 +113,18 @@ def beta_at_epoch(
     epoch: int,
     beta_start: float,
     beta: float,
-    beta_warmup_epochs: int,
-) -> float:
+    beta_warmup_epochs: int) -> float:
     if beta_warmup_epochs <= 0 or epoch >= beta_warmup_epochs:
         return beta
     progress = epoch / beta_warmup_epochs
     return beta_start + (beta - beta_start) * progress
 
 
-def save_run_config(*, run_dir: Path, run_name: str, config: dict) -> None:
+def save_run_config(
+    *,
+    run_dir: Path,
+    run_name: str,
+    config: dict) -> None:
     payload = {"run_name": run_name, "config": config}
     path = run_dir / "config.json"
     with path.open("w") as file:
@@ -129,7 +132,10 @@ def save_run_config(*, run_dir: Path, run_name: str, config: dict) -> None:
         file.write("\n")
 
 
-def format_config_value(*, value: object, template: str) -> str:
+def format_config_value(
+    *,
+    value: object,
+    template: str) -> str:
     if isinstance(value, bool):
         value = int(value)
     rendered = template.format(value)
@@ -177,7 +183,10 @@ def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], l
     return norms, handles
 
 
-def get_kl_loss(*, mu: torch.Tensor, log_sigma_x2: torch.Tensor) -> torch.Tensor:
+def get_kl_loss(
+    *,
+    mu: torch.Tensor,
+    log_sigma_x2: torch.Tensor) -> torch.Tensor:
     _, _, d = mu.shape
 
     sum_mu_x2 = torch.sum(mu.pow(2), dim=2)
@@ -197,8 +206,7 @@ def save_checkpoint(
     model: ACTV2,
     optimizer: optim.Optimizer,
     loss_epoch: float,
-    normalization: NormalizationStats,
-) -> None:
+    normalization: NormalizationStats) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
