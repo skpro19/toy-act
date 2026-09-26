@@ -12,6 +12,9 @@ Examples:
 
     # open-loop action playback (checks actions reproduce the recorded states)
     uv run python scripts/replay.py --video replays/can_ph_actions.mp4 --n 2 --use-actions
+
+    # replay every episode in order on screen
+    uv run python scripts/replay.py --on-screen --all
 """
 
 import argparse
@@ -37,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument("--on-screen", action="store_true", help="render live in the MuJoCo viewer")
     mode.add_argument("--video", type=Path, help="render offscreen to this mp4 path")
     parser.add_argument("--n", type=int, default=1, help="number of random episodes to replay")
+    parser.add_argument("--all", action="store_true", help="replay every episode in order (overrides --n)")
     parser.add_argument("--seed", type=int, default=None, help="seed for random episode selection")
     parser.add_argument("--cameras", type=str, nargs="+", default=None, help="camera name(s); defaults per mode")
     parser.add_argument("--use-actions", action="store_true", help="open-loop action playback instead of loading sim states")
@@ -75,7 +79,7 @@ def main() -> None:
         argparse.Namespace(
             dataset=str(args.dataset),
             filter_key=None,
-            n=args.n,
+            n=None if args.all else args.n,
             use_obs=False,
             use_actions=args.use_actions,
             render=args.on_screen,
