@@ -104,14 +104,17 @@ gitignored, so it is never committed. It holds:
 
    ```bash
    vastai search offers \
-     'gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24 compute_cap>=890 cpu_cores_effective>=8 cpu_ram>=32 inet_down>=200 inet_up>=100 reliability>=0.98 rentable=true verification=verified gpu_display_active=false' \
+     'gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 cpu_cores_effective>=24 cpu_ram>=64 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
      --order dph_total+ --raw
    ```
 
    Do not add `gpu_frac=1`. Vast.ai defines `gpu_frac` as GPUs in the offer
    divided by GPUs in the host, so it rejects a full single 4090 on a multi-GPU
    host. `num_gpus=1` together with `gpu_ram>=24` already guarantees one full
-   GPU.
+   GPU. The `cpu_cores_effective>=24`, `cpu_ram>=64`, `gpu_max_power>=400`,
+   `pci_gen>=4`, and `pcie_bw>=20` filters mirror the hardware gate enforced in
+   step 9 so that instances which pass a bare capacity check but throttle under
+   load are rejected up front.
 
 5. Keep offers at or below `$0.80/hour`, reject EPYC 7001/7002, and rank by
    CPU family (EPYC 9005, EPYC 9004, Threadripper 7000, EPYC 7003, modern
@@ -155,15 +158,18 @@ gitignored, so it is never committed. It holds:
      set -e
      lscpu
      lscpu -e=CPU,CORE,SOCKET,ONLINE
+     lscpu -p=CORE,SOCKET | grep -v "^#" | sort -u | wc -l
      nproc
      grep "^Cpus_allowed_list:" /proc/self/status
+     free -b
      grep "^MemTotal:" /proc/meminfo
      test ! -r /sys/fs/cgroup/memory.max || cat /sys/fs/cgroup/memory.max
+     test ! -r /sys/fs/cgroup/memory/memory.limit_in_bytes || cat /sys/fs/cgroup/memory/memory.limit_in_bytes
      test ! -r /sys/fs/cgroup/cpu.max || cat /sys/fs/cgroup/cpu.max
      test ! -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
      test ! -r /sys/fs/cgroup/cpu/cpu.cfs_period_us || cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
      df -hT /workspace /
-     nvidia-smi --query-gpu=name,memory.total,power.limit,pcie.link.gen.max,pcie.link.width.max,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
+     nvidia-smi --query-gpu=name,memory.total,power.limit,power.default_limit,pcie.link.gen.max,pcie.link.width.max,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
    '
    ```
 
@@ -171,22 +177,83 @@ gitignored, so it is never committed. It holds:
 
    | Check | Requirement |
    |---|---|
-   | Physical cores | At least 8 allowed unique `(CORE, SOCKET)` pairs |
+   | Physical cores | At least 24 allowed unique `(CORE, SOCKET)` pairs |
    | CPU generation | Zen 3 or newer; reject EPYC 7001/7002 |
    | CPU quota | At least 90% of advertised effective vCPUs |
-   | RAM | At least 32 GB allocated and consistent with the offer |
+   | RAM | At least 64 GB allocated and consistent with the offer |
    | GPU | Exactly one RTX 4090 with approximately 24 GB VRAM |
+   | GPU power | At least 400 W |
+   | PCIe | Gen4 x16 capability and offer `pcie_bw >= 20` GB/s |
    | Disk | At least 100 GB available at `/workspace` |
    | Throttling | Thermal and power-brake slowdown inactive |
 
    Count physical cores only from online CPU IDs in `Cpus_allowed_list`, then
    count unique `(CORE, SOCKET)` pairs. Interpret finite cgroup CPU and memory
    limits as the allocation gates; use visible memory only when the cgroup limit
-   is unlimited. Record the CPU model, logical CPUs, RAM, GPU identity, and disk
-   and list every mismatch with the offer. The SSH checks measure local compute
-   only; disk and network values still come from the offer. If a check fails,
-   destroy the instance directly (the watcher has not been launched yet) and try
-   the next-ranked offer; if none remain, stop and report.
+   is unlimited. An idle PCIe link may downshift, so maximum Gen4 x16 capability
+   plus the passing offer measurement is sufficient unless other evidence
+   indicates restriction. Record the CPU model, logical CPUs, RAM, GPU identity,
+   GPU power, PCIe capability, and disk, and list every mismatch with the offer.
+   The SSH checks measure local compute only; disk and network values still come
+   from the offer. If a check fails, destroy the instance directly (the watcher
+   has not been launched yet) and try the next-ranked offer; if none remain, stop
+   and report.
+
+### Network quality acceptance (runs after step 9, before cloning)
+
+Hardware checks measure local compute. A separate gate measures actual S3
+operation latency and upload speed to the bucket where checkpoints and runs are
+written (`s3://toy-act/`). This catches instances whose advertised `inet_up` is
+misleading due to geographic distance, ISP throttling, or host oversubscription.
+
+Generate presigned PUT/DELETE URLs locally through the `toy-pickplace-backup`
+profile, then transfer and run
+`.opencode/commands/scripts/vast-train/network-gate.sh` on the instance:
+
+```bash
+TEMP_NETGATE_KEY="runs/act_v2/.netgate/$(date +%s%N)"
+S3_PRESIGNED_PUT=$(AWS_PROFILE=toy-pickplace-backup uv run python -c "
+import boto3
+s3 = boto3.Session(profile_name='toy-pickplace-backup', region_name='ap-south-1').client('s3')
+print(s3.generate_presigned_url('put_object',
+    Params={'Bucket': 'toy-act', 'Key': '${TEMP_NETGATE_KEY}'}, ExpiresIn=900))
+")
+S3_PRESIGNED_DELETE=$(AWS_PROFILE=toy-pickplace-backup uv run python -c "
+import boto3
+s3 = boto3.Session(profile_name='toy-pickplace-backup', region_name='ap-south-1').client('s3')
+print(s3.generate_presigned_url('delete_object',
+    Params={'Bucket': 'toy-act', 'Key': '${TEMP_NETGATE_KEY}'}, ExpiresIn=900))
+")
+
+B64_NG=$(base64 -w0 .opencode/commands/scripts/vast-train/network-gate.sh)
+
+NETGATE_OUTPUT=$(S3_PRESIGNED_PUT="$S3_PRESIGNED_PUT" \
+  S3_PRESIGNED_DELETE="$S3_PRESIGNED_DELETE" \
+  ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
+    -o BatchMode=yes -p $PORT root@$HOST \
+    "printf '%s' '${B64_NG}' | base64 -d > /tmp/network-gate.sh && \
+     chmod +x /tmp/network-gate.sh && \
+     S3_PRESIGNED_PUT='${S3_PRESIGNED_PUT}' \
+     S3_PRESIGNED_DELETE='${S3_PRESIGNED_DELETE}' \
+     bash /tmp/network-gate.sh" 2>/dev/null)
+
+echo "$NETGATE_OUTPUT"
+```
+
+Require:
+
+| Check | Requirement |
+|---|---|
+| S3 PUT operation latency | Median of 7 successful samples ≤ 5000 ms against the presigned bucket key |
+| S3 upload | Median of 3 successful 4 MiB uploads ≥ 1000 KB/s to the bucket |
+
+The test key lives under `runs/act_v2/.netgate/`, inside the workload profile's
+allowed prefix scope. If the output does not start with `PASSED`, remove
+`/tmp/network-gate.sh` and `/tmp/.netgate-test.bin` on the instance, destroy the
+provisional instance, verify removal, and return to step 4 to try the
+next-ranked offer; if none remain, stop and report. Do not weaken these
+thresholds without asking the user.
+
 10. Clone the pinned commit on the instance and verify it:
 
    ```bash
@@ -197,7 +264,7 @@ gitignored, so it is never committed. It holds:
 
    The clone already contains `scripts/`, the project files, and the
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
-   `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`).
+   `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`).
 11. On the instance, install `uv`, `awscli`, and `tmux`, then run
     `uv sync --frozen --only-group train` and verify `torch.cuda.is_available()`,
     printing the GPU name.

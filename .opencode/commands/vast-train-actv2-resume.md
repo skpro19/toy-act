@@ -33,8 +33,9 @@ completion including cleanup.
 ## Shared workflow
 
 Follow `.opencode/commands/vast-train-actv2.md` steps 1 through 15 (require
-tools, pin commit, provision, hardware verification, clone, install, credentials,
-dataset, TensorBoard, local tmux wrappers) unchanged, except:
+tools, pin commit, provision, hardware acceptance in step 9, the network quality
+acceptance sub-section, clone, install, credentials, dataset, TensorBoard, local
+tmux wrappers) unchanged, except:
 
 - Skip the "Config selection" step. The resume command derives the training
   config from the old run's `config.json` on S3 instead of selecting a repo
