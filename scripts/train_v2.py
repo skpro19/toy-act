@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import re
+import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -72,13 +74,7 @@ RUN_NAME_FIELDS = (
 )
 
 
-def load_config(*, path: Path) -> dict:
-    if not path.is_file():
-        raise FileNotFoundError(f"config file not found: {path}")
-
-    with path.open("rb") as file:
-        config = tomllib.load(file)
-
+def validate_config(*, config: dict) -> dict:
     missing = [key for key in CONFIG_KEYS if key not in config]
     if missing:
         raise KeyError(f"config missing required keys: {missing}")
@@ -98,6 +94,53 @@ def load_config(*, path: Path) -> dict:
         raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
 
     return config
+
+
+def load_config(*, path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"config file not found: {path}")
+
+    with path.open("rb") as file:
+        config = tomllib.load(file)
+
+    return validate_config(config=config)
+
+
+def load_resume_config(*, old_run_name: str) -> dict:
+    path = RUNS_ROOT / old_run_name / "config.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"resume config not found: {path}")
+
+    with path.open("r") as file:
+        payload = json.load(file)
+
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        raise ValueError(f"resume config missing 'config' object: {path}")
+
+    return validate_config(config=config)
+
+
+def find_latest_checkpoint(*, checkpoint_dir: Path) -> Path:
+    snapshots = [
+        path
+        for path in checkpoint_dir.glob("epoch_*.pt")
+        if re.fullmatch(r"epoch_\d+\.pt", path.name)
+    ]
+    if not snapshots:
+        raise FileNotFoundError(f"no epoch snapshots found in {checkpoint_dir}")
+
+    def epoch_number(path: Path) -> int:
+        return int(path.name.removeprefix("epoch_").removesuffix(".pt"))
+
+    return max(snapshots, key=epoch_number)
+
+
+def find_events_file(*, run_dir: Path) -> Path:
+    events = sorted(run_dir.glob("events.out.tfevents.*"))
+    if not events:
+        raise FileNotFoundError(f"no TensorBoard events found in {run_dir}")
+    return events[-1]
 
 
 def make_action_loss_fn(*, action_loss: str) -> nn.Module:
@@ -240,7 +283,11 @@ def save_checkpoint(
     )
 
 
-def train(*, config: dict) -> None:
+def train(
+    *,
+    config: dict,
+    resume_from: Path | None,
+    resume_events: Path | None) -> None:
     seed = config["seed"]
     batch_size = config["batch_size"]
     lr = config["lr"]
@@ -289,6 +336,21 @@ def train(*, config: dict) -> None:
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
+    if resume_from is not None:
+        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = int(checkpoint["epoch"]) + 1
+        global_step = int(checkpoint["global_step"])
+    else:
+        start_epoch = 0
+        global_step = 0
+
+    if start_epoch >= config["epochs"]:
+        raise ValueError(
+            f"resume start epoch {start_epoch} is not below target epochs {config['epochs']}"
+        )
+
     beta = config["beta"]
     beta_start = config["beta_start"]
     beta_warmup_epochs = config["beta_warmup_epochs"]
@@ -299,6 +361,8 @@ def train(*, config: dict) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     save_run_config(run_dir=run_dir, run_name=run_name, config=config)
+    if resume_events is not None:
+        shutil.copy(resume_events, run_dir / resume_events.name)
     writer = SummaryWriter(log_dir=str(run_dir))
     print(f"seed => {seed}")
     print(f"device => {device}")
@@ -315,10 +379,9 @@ def train(*, config: dict) -> None:
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
 
-    global_step = 0
     probe_images = None
     probe_proprio = None
-    for epoch in range(config["epochs"]):
+    for epoch in range(start_epoch, config["epochs"]):
         beta_t = beta_at_epoch(
             epoch=epoch,
             beta_start=beta_start,
@@ -478,7 +541,7 @@ def train(*, config: dict) -> None:
     writer.close()
 
 
-if __name__ == "__main__":
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train ACT v2 (CVAE + action chunking).")
     parser.add_argument(
         "--config",
@@ -486,7 +549,49 @@ if __name__ == "__main__":
         default=Path("configs/act_v2_bs250_l1.toml"),
         help="path to the training hyperparameter config file",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume training from an existing run instead of starting fresh",
+    )
+    parser.add_argument(
+        "--old-run-name",
+        type=str,
+        help="existing run directory name to resume from (required with --resume)",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        help="override total training epochs",
+    )
     args = parser.parse_args()
 
-    config = load_config(path=args.config)
-    train(config=config)
+    if args.resume and args.old_run_name is None:
+        parser.error("--old-run-name is required with --resume")
+
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.resume:
+        assert args.old_run_name is not None
+        config = load_resume_config(old_run_name=args.old_run_name)
+        resume_from = find_latest_checkpoint(
+            checkpoint_dir=CHECKPOINTS_ROOT / args.old_run_name,
+        )
+        resume_events = find_events_file(run_dir=RUNS_ROOT / args.old_run_name)
+    else:
+        config = load_config(path=args.config)
+        resume_from = None
+        resume_events = None
+
+    if args.epochs is not None:
+        config["epochs"] = args.epochs
+
+    train(config=config, resume_from=resume_from, resume_events=resume_events)
+
+
+if __name__ == "__main__":
+    main()

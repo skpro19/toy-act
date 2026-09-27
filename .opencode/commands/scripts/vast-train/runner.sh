@@ -63,10 +63,13 @@ touch "$LOG_FILE" || exit 1
 
 setsid bash -c '
   set -o pipefail
-  config_args=()
-  test -n "${TRAIN_CONFIG:-}" && config_args=(--config "$TRAIN_CONFIG")
+  train_args=()
+  test -n "${TRAIN_CONFIG:-}" && train_args+=(--config "$TRAIN_CONFIG")
+  test -n "${TRAIN_RESUME:-}" && train_args+=(--resume)
+  test -n "${TRAIN_OLD_RUN_NAME:-}" && train_args+=(--old-run-name "$TRAIN_OLD_RUN_NAME")
+  test -n "${TRAIN_EPOCHS:-}" && train_args+=(--epochs "$TRAIN_EPOCHS")
   /root/.local/bin/uv run --frozen --only-group train \
-    python -m "$TRAIN_MODULE" "${config_args[@]}" 2>&1 | tee -a "$1"
+    python -m "$TRAIN_MODULE" "${train_args[@]}" 2>&1 | tee -a "$1"
 ' bash "$LOG_FILE" &
 runner_pid=$!
 write_marker "${CONTROL_DIR}/state/runner-pid" "$runner_pid"

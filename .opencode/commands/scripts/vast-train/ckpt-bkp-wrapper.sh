@@ -5,6 +5,7 @@ readonly CONTROL_DIR=/workspace/toy-act/.vast-train
 readonly PROJECT_DIR=/workspace/toy-act
 readonly CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-checkpoints/act_v1}"
 readonly RUNS_ROOT="${RUNS_ROOT:-runs/act_v1}"
+readonly IGNORE_RUN="${CKPT_BKP_IGNORE_RUN:-}"
 readonly BACKUP_LOG="$CONTROL_DIR/logs/backup.log"
 
 export S3_CHECKPOINT_BASE="$CHECKPOINT_ROOT"
@@ -41,6 +42,11 @@ for _ in $(seq 1 120); do
     find "$CHECKPOINT_ROOT" "$RUNS_ROOT" -mindepth 1 -maxdepth 1 -type d \
       -printf '%f\n' 2>/dev/null | sort -u
   )
+  if [ -n "$IGNORE_RUN" ]; then
+    mapfile -t candidates < <(
+      printf '%s\n' "${candidates[@]}" | grep -v -x -F "$IGNORE_RUN"
+    )
+  fi
   if [ "${#candidates[@]}" -eq 1 ]; then
     candidate="${candidates[0]}"
     if [ -n "$(find "$CHECKPOINT_ROOT/$candidate" "$RUNS_ROOT/$candidate" \
