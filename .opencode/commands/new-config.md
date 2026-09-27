@@ -59,27 +59,27 @@ the merged config. It lives in the same directory as the source.
   segment after `act_v2` when that segment does not start with `bs` (for
   example `instance`, `local`, `smoke`). Otherwise there is no mode segment.
 
-Fields are appended in this fixed order; a field is omitted when it equals its
-default:
+Fields are appended in this fixed order; every field is always included and no
+field is omitted for matching its default:
 
-| Segment | Format | Default (omitted when equal) |
+| Segment | Format | Inclusion |
 |---|---|---|
 | `bs<batch_size>` | integer | always included |
-| `beta<beta>` | `{:g}` with `.` -> `p` | `10.0` |
-| `ep<epochs>` | integer | `1000` |
-| `wu<beta_warmup_epochs>` | integer | `0` (also omitted when `0`) |
+| `beta<beta>` | `{:g}` with `.` -> `p` | always included |
+| `ep<epochs>` | integer | always included |
+| `wu<beta_warmup_epochs>` | integer | always included |
 | `noz` | literal | included only when `use_z` is false |
 | `<action_loss>` | literal | always included |
-| `lr<lr>` | scientific, `.` -> `p`, normalized exponent | `1e-4` |
+| `lr<lr>` | scientific, `.` -> `p`, normalized exponent | always included |
 
 Examples:
 
 | Source | Overrides | New name |
 |---|---|---|
-| `act_v2_bs250_l1.toml` | `beta=0.5` | `act_v2_bs250_beta0p5_l1.toml` |
-| `act_v2_instance_bs250_beta0p1_ep400_wu80_l1.toml` | `beta=0.5` | `act_v2_instance_bs250_beta0p5_ep400_wu80_l1.toml` |
-| `act_v2_bs250_l1.toml` | `epochs=200 use_z=false action_loss=l2` | `act_v2_bs250_ep200_noz_l2.toml` |
-| `act_v2_bs250_l1.toml` | `lr=1e-5` | `act_v2_bs250_l1_lr1e-5.toml` |
+| `act_v2_bs250_l1.toml` | `beta=0.5` | `act_v2_bs250_beta0p5_ep1000_wu0_l1_lr1e-4.toml` |
+| `act_v2_instance_bs250_beta0p1_ep400_wu80_l1.toml` | `beta=0.5` | `act_v2_instance_bs250_beta0p5_ep400_wu80_l1_lr1e-4.toml` |
+| `act_v2_bs250_l1.toml` | `epochs=200 use_z=false action_loss=l2` | `act_v2_bs250_beta10_ep200_wu0_noz_l2_lr1e-4.toml` |
+| `act_v2_bs250_l1.toml` | `lr=1e-5` | `act_v2_bs250_beta10_ep1000_wu0_l1_lr1e-5.toml` |
 
 ## Workflow
 
@@ -122,10 +122,6 @@ TYPES = {
 }
 
 ACTION_LOSS_CHOICES = {"l1", "l2"}
-
-BETA_DEFAULT = 10.0
-EPOCHS_DEFAULT = 1000
-LR_DEFAULT = 1e-4
 
 
 def read_literals(path):
@@ -189,17 +185,13 @@ def make_config_name(base, config):
     if mode:
         parts.append(mode)
     parts.append(f"bs{batch}")
-    if beta != BETA_DEFAULT:
-        parts.append(f"beta{slug_number(beta)}")
-    if epochs != EPOCHS_DEFAULT:
-        parts.append(f"ep{epochs}")
-    if warmup > 0:
-        parts.append(f"wu{warmup}")
+    parts.append(f"beta{slug_number(beta)}")
+    parts.append(f"ep{epochs}")
+    parts.append(f"wu{warmup}")
     if not use_z:
         parts.append("noz")
     parts.append(action_loss)
-    if lr != LR_DEFAULT:
-        parts.append(f"lr{slug_lr(lr)}")
+    parts.append(f"lr{slug_lr(lr)}")
     return "_".join(parts) + ".toml"
 
 
