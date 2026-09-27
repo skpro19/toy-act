@@ -36,6 +36,7 @@ from scripts.train_v1 import (
 
 RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
+SENSITIVITY_PROBE_SIZE = 16
 
 CONFIG_KEYS = (
     "action_loss",
@@ -198,6 +199,24 @@ def get_kl_loss(
     return kl_loss.mean()
 
 
+def measure_observation_sensitivity(
+    *, model: ACTV2, images: torch.Tensor, proprio: torch.Tensor) -> tuple[float, float]:
+    """Measure normalized action changes from swapping one observation modality."""
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.inference_mode():
+            baseline = model.infer(proprio=proprio, img=images)
+            swapped_images = model.infer(proprio=proprio, img=images.roll(1, dims=0))
+            swapped_proprio = model.infer(proprio=proprio.roll(1, dims=0), img=images)
+            image_l1 = (baseline - swapped_images).abs().mean().item()
+            proprio_l1 = (baseline - swapped_proprio).abs().mean().item()
+    finally:
+        model.train(was_training)
+
+    return image_l1, proprio_l1
+
+
 def save_checkpoint(
     *,
     path: Path,
@@ -297,6 +316,8 @@ def train(*, config: dict) -> None:
     print(f"use_z => {config['use_z']}")
 
     global_step = 0
+    probe_images = None
+    probe_proprio = None
     for epoch in range(config["epochs"]):
         beta_t = beta_at_epoch(
             epoch=epoch,
@@ -316,6 +337,10 @@ def train(*, config: dict) -> None:
             img = batch_dict["image"].to(device, non_blocking=True)
             proprio = batch_dict["proprio"].to(device, non_blocking=True)
             actions = batch_dict["target_actions"].to(device, non_blocking=True)
+            if probe_images is None:
+                # Fix real observations from the first batch for every epoch.
+                probe_images = img[:SENSITIVITY_PROBE_SIZE].detach().clone()
+                probe_proprio = proprio[:SENSITIVITY_PROBE_SIZE].detach().clone()
 
             pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
 
@@ -429,6 +454,11 @@ def train(*, config: dict) -> None:
         writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
         writer.add_scalar("epoch_metrics/beta", beta_t, epoch)
+        image_l1, proprio_l1 = measure_observation_sensitivity(
+            model=model, images=probe_images, proprio=probe_proprio,
+        )
+        writer.add_scalar("sensitivity/image_swap_l1", image_l1, epoch)
+        writer.add_scalar("sensitivity/proprio_swap_l1", proprio_l1, epoch)
 
         if (epoch + 1) % config["checkpoint_every"] == 0:
             snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
