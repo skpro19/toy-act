@@ -1,9 +1,10 @@
-"""Run rollouts over every checkpoint in a training run and plot success rate.
+"""Run rollouts over every checkpoint in a training run and save the results.
 
 Evaluates each ``epoch_*.pt`` snapshot in a checkpoint directory with the same
-rollout procedure as ``scripts/rollout.py`` and writes the resulting success
-rate curve to ``rollouts/<run-name>/success_rate.png`` alongside a JSON record
-of the per-checkpoint summaries.
+rollout procedure as ``scripts/rollout.py`` and writes the run's artifacts to
+``rollouts/<run-name>/``: a success-rate curve (``success_rate.png``), the raw
+per-checkpoint summaries (``results.json``), and the same arrays as a NumPy
+``results.npz``.
 
 Robosuite samples object placements from the global NumPy RNG, so the sweep
 seeds ``numpy.random`` from ``--seed`` before every episode. This gives all
@@ -14,7 +15,7 @@ Examples:
     PYTHONPATH=. uv run python scripts/rollout_sweep.py \\
         --model-version act_v2 \\
         --checkpoint-dir checkpoints/act_v2/<run-name> \\
-        --n-rollouts 30 --horizon 250 --no-on-screen
+        --n-rollouts 10 --horizon 250 --no-on-screen
 """
 
 from __future__ import annotations
@@ -186,9 +187,46 @@ def evaluate_checkpoint(
     return summarize_rollouts(rollouts=rollouts)
 
 
+def save_results(
+    *,
+    results: list[dict[str, float | int | str]],
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        output_path,
+        epochs=np.array([int(record["epoch"]) for record in results], dtype=np.int64),
+        checkpoints=np.array([str(record["checkpoint"]) for record in results]),
+        num_rollouts=np.array(
+            [int(record["num_rollouts"]) for record in results],
+            dtype=np.int64,
+        ),
+        num_success=np.array(
+            [int(record["num_success"]) for record in results],
+            dtype=np.int64,
+        ),
+        success_rate=np.array(
+            [float(record["success_rate"]) for record in results],
+            dtype=np.float64,
+        ),
+        return_mean=np.array(
+            [float(record["return_mean"]) for record in results],
+            dtype=np.float64,
+        ),
+        horizon_mean=np.array(
+            [float(record["horizon_mean"]) for record in results],
+            dtype=np.float64,
+        ),
+        num_truncated=np.array(
+            [int(record["num_truncated"]) for record in results],
+            dtype=np.int64,
+        ),
+    )
+
+
 def plot_success_rate(
     *,
-    results: list[dict[str, float | int]],
+    results: list[dict[str, float | int | str]],
     run_name: str,
     output_path: Path,
 ) -> None:
@@ -217,7 +255,7 @@ def plot_success_rate(
     ax.legend(loc="best")
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=150)
+    fig.savefig(output_path, dpi=150, format="png")
     plt.close(fig)
 
 
@@ -302,13 +340,16 @@ def main() -> None:
         close_env(env)
 
     if results:
+        output_dir.mkdir(parents=True, exist_ok=True)
         plot_path = output_dir / "success_rate.png"
         plot_success_rate(results=results, run_name=run_name, output_path=plot_path)
-        results_path = output_dir / "results.json"
-        results_path.parent.mkdir(parents=True, exist_ok=True)
-        results_path.write_text(json.dumps(results, indent=2) + "\n")
+        results_path = output_dir / "results.npz"
+        save_results(results=results, output_path=results_path)
+        records_path = output_dir / "results.json"
+        records_path.write_text(json.dumps(results, indent=2) + "\n")
         print(f"saved plot: {plot_path}")
         print(f"saved results: {results_path}")
+        print(f"saved records: {records_path}")
 
     if failures:
         raise SystemExit("rollout failed for: " + ", ".join(failures))
