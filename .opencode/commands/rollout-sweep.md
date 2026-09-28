@@ -89,10 +89,17 @@ under `rollouts/`. Preflight the scope with a throwaway probe:
 
 ```bash
 PROBE_KEY="rollouts/act_v2/.probe/$(date +%s%N)"
-AWS_PROFILE=toy-pickplace-backup aws s3api put-object \
-  --bucket toy-act --key "$PROBE_KEY" --body /dev/null
-AWS_PROFILE=toy-pickplace-backup aws s3api delete-object \
-  --bucket toy-act --key "$PROBE_KEY"
+PROBE_FILE=$(mktemp)
+printf 'probe\n' > "$PROBE_FILE"
+if AWS_PROFILE=toy-pickplace-backup aws s3api put-object \
+    --bucket toy-act --key "$PROBE_KEY" --body "$PROBE_FILE"; then
+  AWS_PROFILE=toy-pickplace-backup aws s3api delete-object \
+    --bucket toy-act --key "$PROBE_KEY" || exit 1
+else
+  rm -f "$PROBE_FILE"
+  exit 1
+fi
+rm -f "$PROBE_FILE"
 ```
 
 If either command is denied, follow the AGENTS.md "Updating an existing inline
