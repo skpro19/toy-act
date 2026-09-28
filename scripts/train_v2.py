@@ -64,14 +64,17 @@ RUN_NAME_FIELDS = (
     ("batch_size", "bs", "{:d}"),
     ("lr", "lr", "{:.0e}"),
     ("beta", "beta", "{:g}"),
-    ("beta_start", "beta_start", "{:g}"),
-    ("beta_warmup_epochs", "wu", "{:d}"),
     ("epochs", "ep", "{:d}"),
-    ("seed", "seed", "{:d}"),
-    ("checkpoint_every", "ckpt", "{:d}"),
     ("use_z", "use_z", "{:d}"),
     ("action_loss", "", "{:s}"),
 )
+
+RUN_NAME_OMIT_KEYS = frozenset({
+    "seed",
+    "checkpoint_every",
+    "beta_warmup_epochs",
+    "beta_start",
+})
 
 
 def validate_config(*, config: dict) -> dict:
@@ -192,14 +195,14 @@ def format_config_value(
 def make_run_name(*, config: dict) -> str:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     parts = [timestamp]
-    known_keys: set[str] = set()
+    handled_keys: set[str] = set(RUN_NAME_OMIT_KEYS)
     for key, label, template in RUN_NAME_FIELDS:
         if key not in config:
             continue
-        known_keys.add(key)
+        handled_keys.add(key)
         rendered = format_config_value(value=config[key], template=template)
         parts.append(f"{label}{rendered}" if label else rendered)
-    for key in sorted(key for key in config if key not in known_keys):
+    for key in sorted(key for key in config if key not in handled_keys):
         rendered = format_config_value(value=config[key], template="{}")
         parts.append(f"{key}-{rendered}")
     return "_".join(parts)

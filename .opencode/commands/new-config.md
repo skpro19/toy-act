@@ -60,14 +60,15 @@ the merged config. It lives in the same directory as the source.
   example `instance`, `local`, `smoke`). Otherwise there is no mode segment.
 
 Fields are appended in this fixed order; every field is always included and no
-field is omitted for matching its default:
+field is omitted for matching its default. `seed`, `checkpoint_every`,
+`beta_warmup_epochs`, and `beta_start` are intentionally omitted, matching the
+run-name scheme in `scripts/train_v2.py` `RUN_NAME_FIELDS`:
 
 | Segment | Format | Inclusion |
 |---|---|---|
 | `bs<batch_size>` | integer | always included |
 | `beta<beta>` | `{:g}` with `.` -> `p` | always included |
 | `ep<epochs>` | integer | always included |
-| `wu<beta_warmup_epochs>` | integer | always included |
 | `noz` | literal | included only when `use_z` is false |
 | `<action_loss>` | literal | always included |
 | `lr<lr>` | scientific, `.` -> `p`, normalized exponent | always included |
@@ -76,10 +77,10 @@ Examples:
 
 | Source | Overrides | New name |
 |---|---|---|
-| `act_v2_bs250_l1.toml` | `beta=0.5` | `act_v2_bs250_beta0p5_ep1000_wu0_l1_lr1e-4.toml` |
-| `act_v2_instance_bs250_beta0p1_ep400_wu80_l1.toml` | `beta=0.5` | `act_v2_instance_bs250_beta0p5_ep400_wu80_l1_lr1e-4.toml` |
-| `act_v2_bs250_l1.toml` | `epochs=200 use_z=false action_loss=l2` | `act_v2_bs250_beta10_ep200_wu0_noz_l2_lr1e-4.toml` |
-| `act_v2_bs250_l1.toml` | `lr=1e-5` | `act_v2_bs250_beta10_ep1000_wu0_l1_lr1e-5.toml` |
+| `act_v2_bs250_l1.toml` | `beta=0.5` | `act_v2_bs250_beta0p5_ep1000_l1_lr1e-4.toml` |
+| `act_v2_instance_bs250_beta0p1_ep400_wu80_l1.toml` | `beta=0.5` | `act_v2_instance_bs250_beta0p5_ep400_l1_lr1e-4.toml` |
+| `act_v2_bs250_l1.toml` | `epochs=200 use_z=false action_loss=l2` | `act_v2_bs250_beta10_ep200_noz_l2_lr1e-4.toml` |
+| `act_v2_bs250_l1.toml` | `lr=1e-5` | `act_v2_bs250_beta10_ep1000_l1_lr1e-5.toml` |
 
 ## Workflow
 
@@ -176,7 +177,6 @@ def make_config_name(base, config):
     batch = int(config["batch_size"])
     beta = float(config["beta"])
     epochs = int(config["epochs"])
-    warmup = int(config.get("beta_warmup_epochs", 0))
     use_z = bool(config.get("use_z", True))
     lr = float(config["lr"])
     action_loss = config["action_loss"]
@@ -187,7 +187,6 @@ def make_config_name(base, config):
     parts.append(f"bs{batch}")
     parts.append(f"beta{slug_number(beta)}")
     parts.append(f"ep{epochs}")
-    parts.append(f"wu{warmup}")
     if not use_z:
         parts.append("noz")
     parts.append(action_loss)
