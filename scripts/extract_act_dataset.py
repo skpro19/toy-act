@@ -1,20 +1,23 @@
 """Extract a slim ACT training HDF5 from robomimic CAN PH low-dim data.
 
-Renders one camera view from each recorded simulator state and keeps only the
-keys needed for ACT training, plus ``states`` for sim replay.
+Renders one or more camera views from each recorded simulator state and keeps
+only the keys needed for ACT training, plus ``states`` for sim replay.
 
 Examples:
     # quick sanity check on 3 demos
     uv run python scripts/extract_act_dataset.py --n 3
 
-    # full CAN PH extraction
+    # full CAN PH extraction (agentview only)
     uv run python scripts/extract_act_dataset.py
+
+    # agentview plus the wrist camera
+    uv run python scripts/extract_act_dataset.py --cameras agentview robot0_eye_in_hand
 
     # custom paths and resolution
     uv run python scripts/extract_act_dataset.py \\
         --input datasets/can/ph/low_dim_v15.hdf5 \\
         --output datasets/can/ph/act_agentview.hdf5 \\
-        --camera-height 480 --camera-width 640
+        --cameras agentview --camera-height 480 --camera-width 640
 """
 
 from __future__ import annotations
@@ -39,19 +42,22 @@ EXTRACTION_SCRIPT = (
 )
 DEFAULT_INPUT = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "datasets" / "can" / "ph"
-DEFAULT_OUTPUT_NAME = "act_agentview.hdf5"
-DEFAULT_CAMERA = "agentview"
+DEFAULT_CAMERAS = ("agentview",)
 
-OBS_KEYS = (
-    "agentview_image",
+PROPRIO_KEYS = (
     "robot0_joint_pos",
     "robot0_gripper_qpos",
 )
 
 
-def default_output_path() -> Path:
+def obs_keys(*, cameras: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(f"{camera}_image" for camera in cameras) + PROPRIO_KEYS
+
+
+def default_output_path(*, cameras: list[str] | tuple[str, ...]) -> Path:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return DEFAULT_OUTPUT_DIR / f"{timestamp}_{DEFAULT_OUTPUT_NAME}"
+    camera_list = "_".join(cameras)
+    return DEFAULT_OUTPUT_DIR / f"{timestamp}_{camera_list}.hdf5"
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,14 +74,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=default_output_path(),
-        help="path for the slim ACT training hdf5 (defaults to DATE_TIME_act_agentview.hdf5)",
+        default=None,
+        help="path for the slim ACT training hdf5 (defaults to DATE_TIME_<cam-list>.hdf5)",
     )
     parser.add_argument(
-        "--camera",
+        "--cameras",
         type=str,
-        default=DEFAULT_CAMERA,
-        help="single camera name to render",
+        nargs="+",
+        default=list(DEFAULT_CAMERAS),
+        help="camera name(s) to render as image observations",
     )
     parser.add_argument(
         "--camera-height",
@@ -138,10 +145,11 @@ def write_obs_group(
     group: h5py.Group,
     prefix: str,
     obs_dict: dict[str, np.ndarray],
+    obs_keys: tuple[str, ...],
     compress: bool,
 ) -> None:
     obs_group = group.require_group(prefix)
-    for key in OBS_KEYS:
+    for key in obs_keys:
         create_dataset(
             group=obs_group,
             name=key,
@@ -155,14 +163,19 @@ def write_demo(
     output_group: h5py.Group,
     demo_name: str,
     traj: dict,
+    obs_keys: tuple[str, ...],
     camera_info: dict | None,
     source_demo: h5py.Group,
     compress: bool,
 ) -> int:
     ep_group = output_group.create_group(demo_name)
     ep_group.create_dataset("states", data=np.array(traj["states"]))
-    write_obs_group(group=ep_group, prefix="obs", obs_dict=traj["obs"], compress=compress)
-    write_obs_group(group=ep_group, prefix="next_obs", obs_dict=traj["next_obs"], compress=compress)
+    write_obs_group(
+        group=ep_group, prefix="obs", obs_dict=traj["obs"], obs_keys=obs_keys, compress=compress
+    )
+    write_obs_group(
+        group=ep_group, prefix="next_obs", obs_dict=traj["next_obs"], obs_keys=obs_keys, compress=compress
+    )
 
     if "model" in traj["initial_state_dict"]:
         ep_group.attrs["model_file"] = traj["initial_state_dict"]["model"]
@@ -180,18 +193,19 @@ def extract_act_dataset(
     *,
     input_path: Path,
     output_path: Path,
-    camera: str,
+    cameras: list[str],
     camera_height: int,
     camera_width: int,
     num_demos: int | None,
     compress: bool,
 ) -> None:
     extraction = load_extraction_module()
+    written_obs_keys = obs_keys(cameras=cameras)
 
     env_meta = FileUtils.get_env_metadata_from_dataset(dataset_path=str(input_path))
     env = EnvUtils.create_env_for_data_processing(
         env_meta=env_meta,
-        camera_names=[camera],
+        camera_names=list(cameras),
         camera_height=camera_height,
         camera_width=camera_width,
         reward_shaping=False,
@@ -224,7 +238,7 @@ def extract_act_dataset(
                 actions=source_demo["actions"][()],
                 actions_abs=None,
                 done_mode=2,
-                camera_names=[camera],
+                camera_names=list(cameras),
                 camera_height=camera_height,
                 camera_width=camera_width,
             )
@@ -232,6 +246,7 @@ def extract_act_dataset(
                 output_group=data_group,
                 demo_name=demo_name,
                 traj=traj,
+                obs_keys=written_obs_keys,
                 camera_info=camera_info,
                 source_demo=source_demo,
                 compress=compress,
@@ -249,10 +264,11 @@ def extract_act_dataset(
 def main() -> None:
     args = parse_args()
     configure_renderer()
+    output_path = args.output or default_output_path(cameras=args.cameras)
     extract_act_dataset(
         input_path=args.input,
-        output_path=args.output,
-        camera=args.camera,
+        output_path=output_path,
+        cameras=args.cameras,
         camera_height=args.camera_height,
         camera_width=args.camera_width,
         num_demos=args.n,
