@@ -166,7 +166,33 @@ def make_rollout_controller_config() -> dict:
     return controller_config
 
 
-def make_rollout_env_meta(*, dataset_path: Path, camera_height: int, camera_width: int) -> dict:
+def camera_names_from_image_keys(*, image_keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Map checkpoint image keys (e.g. ``agentview_image``) to robosuite camera names."""
+    suffix = "_image"
+    camera_names = []
+    for key in image_keys:
+        if not key.endswith(suffix):
+            raise ValueError(
+                f"image key {key!r} does not end with {suffix!r}; cannot map it to a camera"
+            )
+        camera_names.append(key[: -len(suffix)])
+
+    unknown = [name for name in camera_names if name not in ROBOSUITE_CAMERAS]
+    if unknown:
+        raise ValueError(
+            f"image keys map to unknown robosuite cameras {unknown}; "
+            f"supported cameras are {list(ROBOSUITE_CAMERAS)}"
+        )
+    return tuple(camera_names)
+
+
+def make_rollout_env_meta(
+    *,
+    dataset_path: Path,
+    camera_names: tuple[str, ...],
+    camera_height: int,
+    camera_width: int,
+) -> dict:
     import robomimic.utils.env_utils as EnvUtils
     import robomimic.utils.file_utils as FileUtils
 
@@ -175,6 +201,7 @@ def make_rollout_env_meta(*, dataset_path: Path, camera_height: int, camera_widt
     env_kwargs = env_meta["env_kwargs"]
     env_kwargs["controller_configs"] = make_rollout_controller_config()
     env_kwargs["use_camera_obs"] = True
+    env_kwargs["camera_names"] = list(camera_names)
     env_kwargs["camera_heights"] = camera_height
     env_kwargs["camera_widths"] = camera_width
     initialize_obs_modalities()
@@ -512,15 +539,18 @@ def main() -> None:
     checkpoint = load_checkpoint(checkpoint_path=args.checkpoint, device=device)
     use_z, image_keys = rollout_settings_from_checkpoint(checkpoint=checkpoint)
     model, normalization = load_model(checkpoint=checkpoint, device=device, use_z=use_z)
+    camera_names = camera_names_from_image_keys(image_keys=image_keys)
 
     run_name = checkpoint.get("run_name")
     if run_name is not None:
         print(f"run_name => {run_name}")
     print(f"use_z => {use_z}")
     print(f"image_keys => {list(image_keys)}")
+    print(f"camera_names => {list(camera_names)}")
 
     env_meta = make_rollout_env_meta(
         dataset_path=args.dataset,
+        camera_names=camera_names,
         camera_height=IMG_DIMS[0],
         camera_width=IMG_DIMS[1],
     )
