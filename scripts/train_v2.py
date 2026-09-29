@@ -19,6 +19,7 @@ from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
+    IMAGE_KEYS,
     JOINT_DIMS,
     N_HEAD,
     NUM_LAYERS,

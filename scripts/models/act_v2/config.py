@@ -3,6 +3,7 @@
 ## Image Encoder
 NUM_IMG_TOKENS = 128
 IMG_DIMS = (84,84)
+IMAGE_KEYS = ("agentview_image", "robot0_eye_in_hand_image")
 
 ## Proprio Encoder
 NUM_PROPRIO_TOKENS = 1

@@ -9,6 +9,7 @@ from torch.utils.data import Dataset
 import h5py
 
 from scripts.models.act_v1.config import ACTION_CHUNK_SIZE, PROPRIO_DIMS
+from scripts.models.act_v2.config import IMAGE_KEYS
 
 
 NORMALIZATION_EPSILON = 1e-6
@@ -71,6 +72,31 @@ def image_to_tensor(image: np.ndarray) -> torch.Tensor:
     return image_tensor / 255.0
 
 
+def images_to_tensor(*, images: list[np.ndarray]) -> torch.Tensor:
+    if len(images) == 0:
+        raise ValueError("images must contain at least one frame")
+    return torch.stack([image_to_tensor(image) for image in images], dim=0)
+
+
+def validate_image_keys(*, hdf5: h5py.File, image_keys: tuple[str, ...]) -> None:
+    if len(image_keys) == 0:
+        raise ValueError("image_keys must contain at least one observation key")
+
+    data = hdf5["data"]
+    demo_names = sorted(data.keys(), key=lambda name: int(name.split("_")[1]))
+    if len(demo_names) == 0:
+        raise ValueError("dataset contains no demos under data/")
+
+    for demo_name in demo_names:
+        obs = data[demo_name]["obs"]
+        for key in image_keys:
+            if key not in obs:
+                raise ValueError(
+                    f"demo {demo_name} is missing obs/{key}; "
+                    f"available image keys: {sorted(name for name in obs.keys() if name.endswith('_image'))}"
+                )
+
+
 def compute_normalization_stats(*, hdf5: h5py.File, k: int) -> NormalizationStats:
     proprio_values = []
     action_values = []
@@ -104,11 +130,19 @@ def compute_normalization_stats(*, hdf5: h5py.File, k: int) -> NormalizationStat
 
 
 class CanPhDataset(Dataset):
-    def __init__(self, *, file: str, k: int = ACTION_CHUNK_SIZE) -> None:
+    def __init__(
+        self,
+        *,
+        file: str,
+        image_keys: tuple[str, ...] = IMAGE_KEYS,
+        k: int = ACTION_CHUNK_SIZE,
+    ) -> None:
         self.file = file
+        self.image_keys = image_keys
         self.k = k
         self._hdf5: h5py.File | None = None
         with h5py.File(file, "r") as hdf5:
+            validate_image_keys(hdf5=hdf5, image_keys=image_keys)
             self.samples = self._build_sample_index(hdf5=hdf5)
             self.normalization = compute_normalization_stats(hdf5=hdf5, k=k)
 
@@ -138,7 +172,8 @@ class CanPhDataset(Dataset):
         demo_name, timestep = self.samples[idx]
         demo = hdf5[f"data/{demo_name}"]
 
-        image = demo["obs/agentview_image"][timestep]
+        obs = demo["obs"]
+        image_frames = [obs[key][timestep] for key in self.image_keys]
         joint_pos = demo["obs/robot0_joint_pos"][timestep]
         gripper_qpos = demo["obs/robot0_gripper_qpos"][timestep]
 
@@ -162,7 +197,7 @@ class CanPhDataset(Dataset):
         target_actions = self.normalization.normalize_action(value=target_actions)
 
         return {
-            "image": image_to_tensor(image),
+            "images": images_to_tensor(images=image_frames),
             "proprio": torch.from_numpy(proprio).unsqueeze(0),
             "target_actions": torch.from_numpy(target_actions),
             "demo_name": demo_name,
