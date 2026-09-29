@@ -13,19 +13,23 @@ and needs a working display; it does not provision a Vast.ai instance.
 `$ARGUMENTS` is a run name followed by optional overrides:
 
 ```
-<run-name> [--episodes <n>] [--steps <n>] [--version act_v2]
+<run-name> [--ckpt <n>] [--episodes <n>] [--steps <n>] [--version act_v2]
 ```
 
 - `<run-name>` — required; must be an existing run directory under
   `s3://toy-act/checkpoints/act_v2/`.
+- `--ckpt <n>` — evaluate exactly step `<n>` (for example `20000` selects
+  `step_000020000.pt`); the checkpoint must exist under the run's S3 prefix or
+  the command stops with an error. When omitted, the highest-numbered
+  `step_*.pt` is used.
 - `--episodes <n>` — rollouts for the checkpoint (default 30).
 - `--steps <n>` — maximum steps per episode, passed as `--horizon`
   (default 200).
 - `--version <v>` — model version; only `act_v2` is supported and it is the
   default.
 
-Reject unknown flags, flags missing a value, a non-positive episode/step count,
-and any `--version` other than `act_v2`.
+Reject unknown flags, flags missing a value, a non-positive checkpoint/episode/step
+count, and any `--version` other than `act_v2`.
 
 ## Fixed configuration
 
@@ -52,9 +56,12 @@ and any `--version` other than `act_v2`.
    valid before downloading anything.
 3. Require at least one `step_*.pt` under the run's S3 prefix; stop and report
    if none is present.
-4. Select the highest-numbered `step_*.pt` and download it to
-   `checkpoints/act_v2/<run-name>/`, skipping the download when the local file
-   already exists with the same size. `checkpoints/` is gitignored.
+4. Resolve the checkpoint: with `--ckpt <n>` use `step_<n>.pt` (zero-padded to
+   nine digits, as written by `scripts/train_v2.py`) and stop with an error if
+   it is absent from the run's S3 prefix; otherwise select the highest-numbered
+   `step_*.pt`. Download it to `checkpoints/act_v2/<run-name>/`, skipping the
+   download when the local file already exists with the same size.
+   `checkpoints/` is gitignored.
 5. Run the on-screen rollout to completion, then report the checkpoint filename
    and the printed rollout summary. `scripts/rollout.py` reads `use_z` and the
    image keys from the checkpoint's embedded `config`, so no extra flags or S3
@@ -67,22 +74,31 @@ set -euo pipefail
 
 RUN_NAME=<run-name>
 VERSION=act_v2
+CKPT=""
 EPISODES=30
 STEPS=200
-# Parse "$@" into RUN_NAME / VERSION / EPISODES / STEPS here.
+# Parse "$@" into RUN_NAME / VERSION / CKPT / EPISODES / STEPS here.
 
 PREFIX="checkpoints/${VERSION}/${RUN_NAME}"
 DATASET="datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
 
-CHECKPOINT_NAME=$(
-  AWS_PROFILE=toy-pickplace-backup aws s3 ls "s3://toy-act/${PREFIX}/" --region ap-south-1 \
-    | tr -s ' ' \
-    | cut -d' ' -f4 \
-    | grep -E '^step_[0-9]+\.pt$' \
-    | sort -V \
-    | tail -1
-)
-test -n "$CHECKPOINT_NAME" || { echo "no step_*.pt under s3://toy-act/${PREFIX}/" >&2; exit 1; }
+if [ -n "$CKPT" ]; then
+  CHECKPOINT_NAME=$(printf 'step_%09d.pt' "$CKPT")
+  AWS_PROFILE=toy-pickplace-backup aws s3api head-object \
+    --bucket toy-act --key "${PREFIX}/${CHECKPOINT_NAME}" --region ap-south-1 \
+    >/dev/null \
+    || { echo "no ${CHECKPOINT_NAME} under s3://toy-act/${PREFIX}/" >&2; exit 1; }
+else
+  CHECKPOINT_NAME=$(
+    AWS_PROFILE=toy-pickplace-backup aws s3 ls "s3://toy-act/${PREFIX}/" --region ap-south-1 \
+      | tr -s ' ' \
+      | cut -d' ' -f4 \
+      | grep -E '^step_[0-9]+\.pt$' \
+      | sort -V \
+      | tail -1
+  )
+  test -n "$CHECKPOINT_NAME" || { echo "no step_*.pt under s3://toy-act/${PREFIX}/" >&2; exit 1; }
+fi
 
 LOCAL_DIR="checkpoints/${VERSION}/${RUN_NAME}"
 LOCAL_CHECKPOINT="${LOCAL_DIR}/${CHECKPOINT_NAME}"
