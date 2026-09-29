@@ -2,8 +2,6 @@
 
 import argparse
 import json
-import re
-import shutil
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -42,16 +40,18 @@ DEFAULT_DATASET = Path(
     "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
 )
 SENSITIVITY_PROBE_SIZE = 16
+CONFIG_VERSION = "v3"
 
 CONFIG_KEYS = (
     "action_loss",
     "batch_size",
-    "epochs",
+    "steps",
     "image_keys",
     "lr",
     "seed",
     "beta",
     "checkpoint_every",
+    "version",
 )
 
 ACTION_LOSS_CHOICES = frozenset({"l1", "l2"})
@@ -68,8 +68,8 @@ RUN_NAME_FIELDS = (
     ("batch_size", "bs", "{:d}"),
     ("lr", "lr", "{:.0e}"),
     ("beta", "beta", "{:g}"),
-    ("beta_warmup_epochs", "wu", "{:d}"),
-    ("epochs", "ep", "{:d}"),
+    ("beta_warmup_steps", "wu", "{:d}"),
+    ("steps", "st", "{:d}"),
     ("image_keys", "img", "{:s}"),
     ("use_z", "use_z", "{:d}"),
     ("action_loss", "", "{:s}"),
@@ -79,6 +79,7 @@ RUN_NAME_OMIT_KEYS = frozenset({
     "seed",
     "checkpoint_every",
     "beta_start",
+    "version",
 })
 
 
@@ -87,12 +88,26 @@ def validate_config(*, config: dict) -> dict:
     if missing:
         raise KeyError(f"config missing required keys: {missing}")
 
+    version = config["version"]
+    if version != CONFIG_VERSION:
+        raise ValueError(
+            f"config version must be {CONFIG_VERSION!r}, got {version!r}"
+        )
+
     config.setdefault("beta_start", 0.0)
-    config.setdefault("beta_warmup_epochs", 0)
+    config.setdefault("beta_warmup_steps", 0)
     config.setdefault("use_z", True)
 
-    if config["beta_warmup_epochs"] < 0:
-        raise ValueError(f"beta_warmup_epochs must be >= 0, got {config['beta_warmup_epochs']}")
+    if config["steps"] <= 0:
+        raise ValueError(f"steps must be > 0, got {config['steps']}")
+    if config["checkpoint_every"] <= 0:
+        raise ValueError(
+            f"checkpoint_every must be > 0, got {config['checkpoint_every']}"
+        )
+    if config["beta_warmup_steps"] < 0:
+        raise ValueError(
+            f"beta_warmup_steps must be >= 0, got {config['beta_warmup_steps']}"
+        )
     if config["beta_start"] < 0.0:
         raise ValueError(f"beta_start must be >= 0, got {config['beta_start']}")
 
@@ -120,43 +135,6 @@ def load_config(*, path: Path) -> dict:
     return validate_config(config=config)
 
 
-def load_resume_config(*, old_run_name: str) -> dict:
-    path = RUNS_ROOT / old_run_name / "config.json"
-    if not path.is_file():
-        raise FileNotFoundError(f"resume config not found: {path}")
-
-    with path.open("r") as file:
-        payload = json.load(file)
-
-    config = payload.get("config")
-    if not isinstance(config, dict):
-        raise ValueError(f"resume config missing 'config' object: {path}")
-
-    return validate_config(config=config)
-
-
-def find_latest_checkpoint(*, checkpoint_dir: Path) -> Path:
-    snapshots = [
-        path
-        for path in checkpoint_dir.glob("epoch_*.pt")
-        if re.fullmatch(r"epoch_\d+\.pt", path.name)
-    ]
-    if not snapshots:
-        raise FileNotFoundError(f"no epoch snapshots found in {checkpoint_dir}")
-
-    def epoch_number(path: Path) -> int:
-        return int(path.name.removeprefix("epoch_").removesuffix(".pt"))
-
-    return max(snapshots, key=epoch_number)
-
-
-def find_events_file(*, run_dir: Path) -> Path:
-    events = sorted(run_dir.glob("events.out.tfevents.*"))
-    if not events:
-        raise FileNotFoundError(f"no TensorBoard events found in {run_dir}")
-    return events[-1]
-
-
 def make_action_loss_fn(*, action_loss: str) -> nn.Module:
     if action_loss == "l1":
         return nn.L1Loss(reduction="mean")
@@ -166,15 +144,15 @@ def make_action_loss_fn(*, action_loss: str) -> nn.Module:
     raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
 
 
-def beta_at_epoch(
+def beta_at_step(
     *,
-    epoch: int,
+    step: int,
     beta_start: float,
     beta: float,
-    beta_warmup_epochs: int) -> float:
-    if beta_warmup_epochs <= 0 or epoch >= beta_warmup_epochs:
+    beta_warmup_steps: int) -> float:
+    if beta_warmup_steps <= 0 or step >= beta_warmup_steps:
         return beta
-    progress = epoch / beta_warmup_epochs
+    progress = step / beta_warmup_steps
     return beta_start + (beta - beta_start) * progress
 
 
@@ -276,6 +254,10 @@ def measure_observation_sensitivity(
     return image_l1, proprio_l1
 
 
+def checkpoint_path_for_step(*, checkpoint_dir: Path, global_step: int) -> Path:
+    return checkpoint_dir / f"step_{global_step:09d}.pt"
+
+
 def save_checkpoint(
     *,
     path: Path,
@@ -299,12 +281,38 @@ def save_checkpoint(
     )
 
 
+def maybe_save_step_checkpoint(
+    *,
+    checkpoint_dir: Path,
+    checkpoint_every: int,
+    epoch: int,
+    global_step: int,
+    model: ACTV2,
+    optimizer: optim.Optimizer,
+    loss_running_avg: float | None,
+    normalization: NormalizationStats) -> Path | None:
+    if global_step <= 0 or global_step % checkpoint_every != 0:
+        return None
+    snapshot_path = checkpoint_path_for_step(
+        checkpoint_dir=checkpoint_dir,
+        global_step=global_step,
+    )
+    save_checkpoint(
+        path=snapshot_path,
+        epoch=epoch,
+        global_step=global_step,
+        model=model,
+        optimizer=optimizer,
+        loss_epoch=0.0 if loss_running_avg is None else loss_running_avg,
+        normalization=normalization,
+    )
+    return snapshot_path
+
+
 def train(
     *,
     config: dict,
-    dataset: Path,
-    resume_from: Path | None,
-    resume_events: Path | None) -> None:
+    dataset: Path) -> None:
     seed = config["seed"]
     batch_size = config["batch_size"]
     lr = config["lr"]
@@ -354,24 +362,13 @@ def train(
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
 
-    if resume_from is not None:
-        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        start_epoch = int(checkpoint["epoch"]) + 1
-        global_step = int(checkpoint["global_step"])
-    else:
-        start_epoch = 0
-        global_step = 0
-
-    if start_epoch >= config["epochs"]:
-        raise ValueError(
-            f"resume start epoch {start_epoch} is not below target epochs {config['epochs']}"
-        )
+    target_steps = config["steps"]
+    global_step = 0
 
     beta = config["beta"]
     beta_start = config["beta_start"]
-    beta_warmup_epochs = config["beta_warmup_epochs"]
+    beta_warmup_steps = config["beta_warmup_steps"]
+    checkpoint_every = config["checkpoint_every"]
 
     run_name = make_run_name(config=config)
     run_dir = RUNS_ROOT / run_name
@@ -379,40 +376,45 @@ def train(
     run_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     save_run_config(run_dir=run_dir, run_name=run_name, config=config)
-    if resume_events is not None:
-        shutil.copy(resume_events, run_dir / resume_events.name)
     writer = SummaryWriter(log_dir=str(run_dir))
     print(f"seed => {seed}")
     print(f"device => {device}")
     print(f"gpu => {torch.cuda.get_device_name(device)}")
     print(f"tensorboard logs => {run_dir.resolve()}")
     print(f"checkpoints => {checkpoint_dir.resolve()}")
-    if beta_warmup_epochs > 0:
+    if beta_warmup_steps > 0:
         print(
             f"beta schedule => linear warmup from {beta_start:g} to {beta:g} "
-            f"over epochs 1–{beta_warmup_epochs}"
+            f"over steps 0–{beta_warmup_steps - 1}"
         )
     else:
         print(f"beta => {beta:g}")
+    print(f"target_steps => {target_steps}")
+    print(f"checkpoint_every => {checkpoint_every} steps")
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
 
     probe_images = None
     probe_proprio = None
-    for epoch in range(start_epoch, config["epochs"]):
-        beta_t = beta_at_epoch(
-            epoch=epoch,
-            beta_start=beta_start,
-            beta=beta,
-            beta_warmup_epochs=beta_warmup_epochs,
-        )
+    epoch = 0
+    while global_step < target_steps:
         epoch_loss = 0.0
         epoch_action_loss = 0.0
         epoch_kl_loss = 0.0
+        epoch_weighted_kl_loss = 0.0
         num_batches = 0
 
-        pbar = tqdm(can_ph_dataloader, desc=f"epoch {epoch + 1}/{config['epochs']}")
+        pbar = tqdm(
+            can_ph_dataloader,
+            desc=f"epoch {epoch + 1} step {global_step}/{target_steps}",
+        )
         for batch_dict in pbar:
+            beta_t = beta_at_step(
+                step=global_step,
+                beta_start=beta_start,
+                beta=beta,
+                beta_warmup_steps=beta_warmup_steps,
+            )
             optimizer.zero_grad()
 
             img = batch_dict["images"].to(device, non_blocking=True)
@@ -445,6 +447,7 @@ def train(
             epoch_loss += batch_loss
             epoch_action_loss += batch_action_loss
             epoch_kl_loss += batch_kl_loss
+            epoch_weighted_kl_loss += batch_weighted_kl_loss
             num_batches += 1
             pbar.set_postfix(loss=f"{batch_loss:.4f}")
 
@@ -520,10 +523,36 @@ def train(
                 )
             global_step += 1
 
+            running_avg_loss = epoch_loss / num_batches
+            snapshot_path = maybe_save_step_checkpoint(
+                checkpoint_dir=checkpoint_dir,
+                checkpoint_every=checkpoint_every,
+                epoch=epoch,
+                global_step=global_step,
+                model=model,
+                optimizer=optimizer,
+                loss_running_avg=running_avg_loss,
+                normalization=normalization,
+            )
+            if snapshot_path is not None:
+                print(f"saved snapshot => {snapshot_path.resolve()}")
+
+            if global_step >= target_steps:
+                break
+
+        if num_batches == 0:
+            break
+
         avg_loss = epoch_loss / num_batches
         avg_action_loss = epoch_action_loss / num_batches
         avg_kl_loss = epoch_kl_loss / num_batches
-        avg_weighted_kl_loss = beta_t * avg_kl_loss
+        avg_weighted_kl_loss = epoch_weighted_kl_loss / num_batches
+        epoch_beta = beta_at_step(
+            step=max(global_step - 1, 0),
+            beta_start=beta_start,
+            beta=beta,
+            beta_warmup_steps=beta_warmup_steps,
+        )
         if avg_loss > 0.0:
             kl_fraction = avg_weighted_kl_loss / avg_loss
         else:
@@ -534,25 +563,30 @@ def train(
         writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
         writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
-        writer.add_scalar("epoch_metrics/beta", beta_t, epoch)
+        writer.add_scalar("epoch_metrics/beta", epoch_beta, epoch)
         image_l1, proprio_l1 = measure_observation_sensitivity(
             model=model, images=probe_images, proprio=probe_proprio,
         )
         writer.add_scalar("sensitivity/image_swap_l1", image_l1, epoch)
         writer.add_scalar("sensitivity/proprio_swap_l1", proprio_l1, epoch)
 
-        if (epoch + 1) % config["checkpoint_every"] == 0:
-            snapshot_path = checkpoint_dir / f"epoch_{epoch + 1:03d}.pt"
-            save_checkpoint(
-                path=snapshot_path,
-                epoch=epoch,
-                global_step=global_step,
-                model=model,
-                optimizer=optimizer,
-                loss_epoch=avg_loss,
-                normalization=normalization,
-            )
-            print(f"saved snapshot => {snapshot_path.resolve()}")
+        epoch += 1
+
+    if global_step > 0 and global_step % checkpoint_every != 0:
+        snapshot_path = checkpoint_path_for_step(
+            checkpoint_dir=checkpoint_dir,
+            global_step=global_step,
+        )
+        save_checkpoint(
+            path=snapshot_path,
+            epoch=epoch - 1,
+            global_step=global_step,
+            model=model,
+            optimizer=optimizer,
+            loss_epoch=0.0,
+            normalization=normalization,
+        )
+        print(f"saved final snapshot => {snapshot_path.resolve()}")
 
     for handle in activation_hook_handles:
         handle.remove()
@@ -574,24 +608,11 @@ def parse_args() -> argparse.Namespace:
         help="path to the CAN PH HDF5 training dataset",
     )
     parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="resume training from an existing run instead of starting fresh",
-    )
-    parser.add_argument(
-        "--old-run-name",
-        type=str,
-        help="existing run directory name to resume from (required with --resume)",
-    )
-    parser.add_argument(
-        "--epochs",
+        "--steps",
         type=int,
-        help="override total training epochs",
+        help="override total training steps",
     )
     args = parser.parse_args()
-
-    if args.resume and args.old_run_name is None:
-        parser.error("--old-run-name is required with --resume")
 
     return args
 
@@ -599,27 +620,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.resume:
-        assert args.old_run_name is not None
-        config = load_resume_config(old_run_name=args.old_run_name)
-        resume_from = find_latest_checkpoint(
-            checkpoint_dir=CHECKPOINTS_ROOT / args.old_run_name,
-        )
-        resume_events = find_events_file(run_dir=RUNS_ROOT / args.old_run_name)
-    else:
-        config = load_config(path=args.config)
-        resume_from = None
-        resume_events = None
+    config = load_config(path=args.config)
 
-    if args.epochs is not None:
-        config["epochs"] = args.epochs
+    if args.steps is not None:
+        config["steps"] = args.steps
 
-    train(
-        config=config,
-        dataset=args.dataset,
-        resume_from=resume_from,
-        resume_events=resume_events,
-    )
+    train(config=config, dataset=args.dataset)
 
 
 if __name__ == "__main__":
