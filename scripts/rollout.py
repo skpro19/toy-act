@@ -16,6 +16,11 @@ Examples:
     uv run python scripts/rollout.py \\
         --model-version act_v2 --no-use-z \\
         --checkpoint checkpoints/act_v2/.../last.pt --n-rollouts 20
+
+    uv run python scripts/rollout.py \\
+        --model-version act_v2 \\
+        --image-keys agentview_image robot0_eye_in_hand_image \\
+        --checkpoint checkpoints/act_v2/.../last.pt --n-rollouts 20
 """
 
 from __future__ import annotations
@@ -49,6 +54,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_HORIZON = 400
 DEFAULT_CAMERA = "agentview"
+DEFAULT_IMAGE_KEYS = (f"{DEFAULT_CAMERA}_image",)
+ROBOSUITE_CAMERAS = (
+    "agentview",
+    "frontview",
+    "birdview",
+    "robot0_robotview",
+    "robot0_eye_in_hand",
+)
 GRIPPER_APERTURE_THRESHOLD = 0.002
 # robosuite Panda GRIP convention: -1 opens the fingers, +1 closes them.
 GRIPPER_OPEN_COMMAND = -1.0
@@ -85,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DATASET,
         help="robomimic low-dim hdf5 used to recreate PickPlaceCan",
     )
+    parser.add_argument(
+        "--image-keys",
+        nargs="+",
+        default=list(DEFAULT_IMAGE_KEYS),
+        help="observation image keys fed to the model, in camera order",
+    )
     parser.add_argument("--n-rollouts", type=int, default=20, help="number of evaluation episodes")
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON, help="max steps per episode")
     parser.add_argument("--seed", type=int, default=0, help="random seed for env resets")
@@ -114,7 +133,7 @@ def initialize_obs_modalities() -> None:
 
     ObsUtils.initialize_obs_modality_mapping_from_dict(
         {
-            "rgb": ["agentview_image", "robot0_eye_in_hand_image"],
+            "rgb": [f"{camera}_image" for camera in ROBOSUITE_CAMERAS],
             "low_dim": [
                 "robot0_joint_pos",
                 "robot0_joint_vel",
@@ -241,7 +260,7 @@ def load_model(
     return model, normalization
 
 
-def obs_image_to_tensor(*, image: np.ndarray, device: torch.device) -> torch.Tensor:
+def obs_image_frame_to_tensor(*, image: np.ndarray, device: torch.device) -> torch.Tensor:
     if image.dtype == np.uint8:
         tensor = image_to_tensor(image)
     else:
@@ -251,7 +270,20 @@ def obs_image_to_tensor(*, image: np.ndarray, device: torch.device) -> torch.Ten
         else:
             array = array.astype(np.uint8)
         tensor = image_to_tensor(array)
-    return tensor.unsqueeze(0).to(device=device)
+    return tensor.to(device=device)
+
+
+def obs_images_to_tensor(
+    *,
+    obs: dict,
+    image_keys: tuple[str, ...],
+    device: torch.device) -> torch.Tensor:
+    frames = []
+    for key in image_keys:
+        if key not in obs:
+            raise KeyError(f"expected observation key {key!r}, got {sorted(obs.keys())}")
+        frames.append(obs_image_frame_to_tensor(image=obs[key], device=device))
+    return torch.stack(frames, dim=0)
 
 
 def obs_to_proprio_tensor(
@@ -306,12 +338,17 @@ def predict_action_chunk(
     obs: dict,
     device: torch.device,
     normalization: NormalizationStats,
+    image_keys: tuple[str, ...],
 ) -> np.ndarray:
-    image_key = f"{DEFAULT_CAMERA}_image"
-    if image_key not in obs:
-        raise KeyError(f"expected observation key {image_key!r}, got {sorted(obs.keys())}")
-
-    img_tensor = obs_image_to_tensor(image=obs[image_key], device=device)
+    images = obs_images_to_tensor(obs=obs, image_keys=image_keys, device=device)
+    if isinstance(model, ACTV2):
+        img_tensor = images.unsqueeze(0)
+    else:
+        if images.shape[0] != 1:
+            raise ValueError(
+                f"act_v1 expects exactly one image key, got {len(image_keys)}: {image_keys}"
+            )
+        img_tensor = images
     proprio_tensor = obs_to_proprio_tensor(
         obs=obs,
         device=device,
@@ -355,6 +392,7 @@ def run_rollout(
     env,
     device: torch.device,
     normalization: NormalizationStats,
+    image_keys: tuple[str, ...],
     horizon: int,
     terminate_on_success: bool,
     render: bool,
@@ -378,6 +416,7 @@ def run_rollout(
                 obs=obs,
                 device=device,
                 normalization=normalization,
+                image_keys=image_keys,
             )
             chunk_step = 0
 
@@ -479,6 +518,8 @@ def main() -> None:
     )
     if args.model_version == "act_v2":
         print(f"use_z => {args.use_z}")
+    image_keys = tuple(args.image_keys)
+    print(f"image_keys => {list(image_keys)}")
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
     rollouts: list[dict[str, float | int | bool]] = []
@@ -489,6 +530,7 @@ def main() -> None:
                 env=env,
                 device=device,
                 normalization=normalization,
+                image_keys=image_keys,
                 horizon=args.horizon,
                 terminate_on_success=args.terminate_on_success,
                 render=on_screen,

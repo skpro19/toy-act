@@ -41,6 +41,7 @@ from tqdm import tqdm
 
 from scripts.models.act_v1.config import IMG_DIMS
 from scripts.rollout import (
+    DEFAULT_IMAGE_KEYS,
     close_env,
     configure_renderer,
     create_rollout_env,
@@ -161,6 +162,11 @@ def resolve_use_z(*, config: dict) -> bool:
     return bool(config.get("config", {}).get("use_z", True))
 
 
+def resolve_image_keys(*, config: dict) -> tuple[str, ...]:
+    image_keys = config.get("config", {}).get("image_keys", list(DEFAULT_IMAGE_KEYS))
+    return tuple(image_keys)
+
+
 def git_commit() -> str:
     return os.environ.get("GIT_COMMIT", "")
 
@@ -224,6 +230,7 @@ def sweep_run(
 
     config = download_json(client=client, bucket=args.bucket, key=config_key)
     use_z = resolve_use_z(config=config)
+    image_keys = resolve_image_keys(config=config)
     checkpoints = list_checkpoints(
         client=client,
         bucket=args.bucket,
@@ -245,6 +252,7 @@ def sweep_run(
         "run_name": run_name,
         "version": args.version,
         "use_z": use_z,
+        "image_keys": list(image_keys),
         "seed": args.seed,
         "n_rollouts": args.n_rollouts,
         "horizon": args.horizon,
@@ -280,6 +288,7 @@ def sweep_run(
                     device=device,
                     model_version=args.version,
                     use_z=use_z,
+                    image_keys=image_keys,
                     n_rollouts=args.n_rollouts,
                     horizon=args.horizon,
                     terminate_on_success=args.terminate_on_success,

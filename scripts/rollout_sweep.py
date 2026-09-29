@@ -39,6 +39,7 @@ from scripts.models.act_v1.config import IMG_DIMS
 from scripts.rollout import (
     DEFAULT_DATASET,
     DEFAULT_HORIZON,
+    DEFAULT_IMAGE_KEYS,
     close_env,
     configure_renderer,
     create_rollout_env,
@@ -96,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         help="robomimic low-dim hdf5 used to recreate PickPlaceCan",
     )
     parser.add_argument(
+        "--image-keys",
+        nargs="+",
+        default=list(DEFAULT_IMAGE_KEYS),
+        help="observation image keys fed to the model, in camera order",
+    )
+    parser.add_argument(
         "--terminate-on-success",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -146,6 +153,7 @@ def evaluate_checkpoint(
     device: torch.device,
     model_version: str,
     use_z: bool,
+    image_keys: tuple[str, ...],
     n_rollouts: int,
     horizon: int,
     terminate_on_success: bool,
@@ -168,6 +176,7 @@ def evaluate_checkpoint(
                 env=env,
                 device=device,
                 normalization=normalization,
+                image_keys=image_keys,
                 horizon=horizon,
                 terminate_on_success=terminate_on_success,
                 render=on_screen,
@@ -313,6 +322,7 @@ def main() -> None:
                     device=device,
                     model_version=args.model_version,
                     use_z=args.use_z,
+                    image_keys=tuple(args.image_keys),
                     n_rollouts=args.n_rollouts,
                     horizon=args.horizon,
                     terminate_on_success=args.terminate_on_success,
