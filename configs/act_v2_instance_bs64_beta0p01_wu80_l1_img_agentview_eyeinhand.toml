@@ -14,7 +14,7 @@ image_keys = ["agentview_image", "robot0_eye_in_hand_image"]
 [tensorboard]
 activations = false
 batch_metrics = true
-denorm_l1 = false
+denorm_l1 = true
 epoch_metrics = true
 eval = true
 hyperparams = true
