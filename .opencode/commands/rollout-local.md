@@ -13,7 +13,7 @@ and needs a working display; it does not provision a Vast.ai instance.
 `$ARGUMENTS` is a run name followed by optional overrides:
 
 ```
-<run-name> [--ckpt <n>] [--episodes <n>] [--steps <n>] [--version act_v2]
+<run-name> [--ckpt <n>] [--episodes <n>] [--steps <n>] [--seed <n>] [--version act_v2]
 ```
 
 - `<run-name>` — required; must be an existing run directory under
@@ -25,11 +25,12 @@ and needs a working display; it does not provision a Vast.ai instance.
 - `--episodes <n>` — rollouts for the checkpoint (default 30).
 - `--steps <n>` — maximum steps per episode, passed as `--horizon`
   (default 200).
+- `--seed <n>` — random seed for env resets (default 0).
 - `--version <v>` — model version; only `act_v2` is supported and it is the
   default.
 
 Reject unknown flags, flags missing a value, a non-positive checkpoint/episode/step
-count, and any `--version` other than `act_v2`.
+count, a negative seed, and any `--version` other than `act_v2`.
 
 ## Fixed configuration
 
@@ -39,7 +40,7 @@ count, and any `--version` other than `act_v2`.
 | Rendering | On-screen (GLFW), `--on-screen` |
 | Episodes | 30 (override with `--episodes`) |
 | Steps per episode | 200 (override with `--steps`) |
-| Seed | 0 |
+| Seed | 0 (override with `--seed`) |
 | Dataset | `datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
 | AWS profile | `toy-pickplace-backup` |
 | S3 region | `ap-south-1` |
@@ -77,7 +78,8 @@ VERSION=act_v2
 CKPT=""
 EPISODES=30
 STEPS=200
-# Parse "$@" into RUN_NAME / VERSION / CKPT / EPISODES / STEPS here.
+SEED=0
+# Parse "$@" into RUN_NAME / VERSION / CKPT / EPISODES / STEPS / SEED here.
 
 PREFIX="checkpoints/${VERSION}/${RUN_NAME}"
 DATASET="datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
@@ -118,7 +120,7 @@ PYTHONPATH=. uv run python scripts/rollout.py \
   --dataset "$DATASET" \
   --n-rollouts "$EPISODES" \
   --horizon "$STEPS" \
-  --seed 0 \
+  --seed "$SEED" \
   --on-screen
 ```
 
