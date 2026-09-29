@@ -158,8 +158,8 @@ gitignored, so it is never committed. It holds:
    ranked non-quarantined machine. Quarantine by `machine_id`, not offer id,
    because Vast can immediately advertise the same machine under a new offer
    id. Use a command-specific temporary `known_hosts` file populated by
-   `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, rsync, and
-   port-forwarding.
+   `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, file
+   transfers, and port-forwarding.
 9. Verify the provisioned hardware against the selected offer before cloning.
    Treat the rental as provisional and collect:
 
@@ -276,20 +276,20 @@ thresholds without asking the user.
    The clone already contains `scripts/`, the project files, and the
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
    `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`).
-11. On the instance, install `uv`, `awscli`, `tmux`, and the headless GL
-    libraries the checkpoint-evaluation renderer needs.
+11. On the instance, install `uv`, `awscli`, `tmux`, `build-essential`, and the
+    headless GL libraries the checkpoint-evaluation renderer needs.
 
     `scripts/train_v2.py` runs a robosuite rollout at every checkpoint, so it
-    imports `robosuite`, `robomimic`, and `mujoco`. These are declared in
-    `[project].dependencies` and sourced from pinned upstream git revisions in
-    `[tool.uv.sources]` (`robomimic` @ `d309eae`, `robosuite` @ `a071383`, v1.5.1,
-    per the official robomimic install guide). `uv sync` therefore fetches and
-    builds them itself; no `third_party/` clone or transfer is needed. The
-    compiler is required because robosuite pulls in `pynput` -> `evdev`, which
-    builds from source and otherwise fails with `No such file or directory:
-    'cc'`.
+    imports `robosuite`, `robomimic`, and `mujoco`. The `train` dependency group
+    therefore contains the full training stack, and its simulator packages are
+    sourced from pinned upstream git revisions in `[tool.uv.sources]`
+    (`robomimic` @ `d309eae`, `robosuite` @ `a071383`, v1.5.1, per the official
+    robomimic install guide). `uv sync` fetches and builds them itself; no
+    `third_party/` clone or transfer is needed. The compiler is required because
+    robosuite pulls in `pynput` -> `evdev`, which builds from source and
+    otherwise fails with `No such file or directory: 'cc'`.
 
-    Install the tooling and sync the full locked environment (main + train):
+    Install the tooling and sync the `train` group, which is self-sufficient:
 
     ```bash
     curl -LsSf https://astral.sh/uv/install.sh | sh          # -> /root/.local/bin/uv
@@ -297,12 +297,11 @@ thresholds without asking the user.
     apt-get update -qq && apt-get install -y -qq \
       tmux build-essential libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
     cd /workspace/toy-act
-    /root/.local/bin/uv sync --frozen --no-default-groups --group train
+    /root/.local/bin/uv sync --frozen --only-group train
     ```
 
-    Leave the runner on its train-only mode: `uv run --frozen --only-group train`
-    syncs inexactly and does not remove the already-installed simulator
-    packages, so the rollout imports keep working at checkpoint time.
+    `runner.sh` and the TensorBoard session both run `uv run --frozen
+    --only-group train`, so they reuse this same self-sufficient environment.
 
     Verify `torch.cuda.is_available()` (printing the GPU name), that the rollout
     imports load, and that off-screen EGL rendering works, because a broken
