@@ -81,7 +81,7 @@ gitignored, so it is never committed. It holds:
 | `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, S3 checkpoint URI, and watcher pid/script/log/report paths |
 | `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
 | `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
-| `watcher.sh` | The exact detached watcher script that was launched |
+| `watcher.sh` | Copy of the committed `local-watcher.sh` template that was launched |
 | `watcher.pid` | PID of the detached watcher, for liveness checks and recovery |
 | `watcher.log` | Timestamped watcher events and training progress |
 | `report.txt` | Final outcome report written by the watcher (run name, S3 URIs, elapsed time, price, pinned commit, TensorBoard URL, S3 verification, cleanup status) |
@@ -275,7 +275,8 @@ thresholds without asking the user.
 
    The clone already contains `scripts/`, the project files, and the
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
-   `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`).
+   `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`,
+   `local-watcher.sh`).
 11. On the instance, install `uv`, `awscli`, `tmux`, `build-essential`, and the
     headless GL libraries the checkpoint-evaluation renderer needs.
 
@@ -415,9 +416,21 @@ thresholds without asking the user.
     upload.
     The same run directory holds TensorBoard training, rollout success, and
     training/rollout throughput scalars.
-18. Hand off to a detached local watcher and stop babysitting. Launch the
-    watcher with `setsid`/`nohup` so it survives the interactive agent returning,
-    and make the watcher own step-7 cleanup and the local `VAST_API_KEY`.
+18. Hand off to a detached local watcher and stop babysitting. Copy the
+    committed `.opencode/commands/scripts/vast-train/local-watcher.sh` to
+    `$RUN_DIR/watcher.sh` and launch it with `setsid`/`nohup` so it survives the
+    interactive agent returning:
+
+    ```bash
+    cp .opencode/commands/scripts/vast-train/local-watcher.sh "$RUN_DIR/watcher.sh"
+    chmod +x "$RUN_DIR/watcher.sh"
+    setsid nohup bash "$RUN_DIR/watcher.sh" "$RUN_DIR" \
+      >"$RUN_DIR/watcher.out" 2>&1 </dev/null &
+    ```
+
+    The template sources `$RUN_DIR/setup.env` for the run-specific values and
+    owns step-7 cleanup plus the local `VAST_API_KEY`. Set `WATCHER_DRY_RUN=yes`
+    to rehearse the gate without destroying. It writes its PID to `watcher.pid`.
     The watcher must:
     - record `RUN_STARTED=yes` only after it reads remote `state/run-status` as
       `running`, and initialize `TERMINAL_CONFIRMED=no`;
