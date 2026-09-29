@@ -261,20 +261,24 @@ def checkpoint_path_for_step(*, checkpoint_dir: Path, global_step: int) -> Path:
 def save_checkpoint(
     *,
     path: Path,
+    run_name: str,
+    config: dict,
+    dataset: str,
     epoch: int,
     global_step: int,
     model: ACTV2,
-    optimizer: optim.Optimizer,
-    loss_epoch: float,
+    loss_running_avg: float,
     normalization: NormalizationStats) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
+            "run_name": run_name,
+            "config": dict(config),
+            "dataset": dataset,
             "epoch": epoch,
             "global_step": global_step,
             "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "loss_epoch": loss_epoch,
+            "loss_running_avg": loss_running_avg,
             "normalization": normalization.as_checkpoint_dict(),
         },
         path,
@@ -285,11 +289,13 @@ def maybe_save_step_checkpoint(
     *,
     checkpoint_dir: Path,
     checkpoint_every: int,
+    run_name: str,
+    config: dict,
+    dataset: str,
     epoch: int,
     global_step: int,
     model: ACTV2,
-    optimizer: optim.Optimizer,
-    loss_running_avg: float | None,
+    loss_running_avg: float,
     normalization: NormalizationStats) -> Path | None:
     if global_step <= 0 or global_step % checkpoint_every != 0:
         return None
@@ -299,11 +305,13 @@ def maybe_save_step_checkpoint(
     )
     save_checkpoint(
         path=snapshot_path,
+        run_name=run_name,
+        config=config,
+        dataset=dataset,
         epoch=epoch,
         global_step=global_step,
         model=model,
-        optimizer=optimizer,
-        loss_epoch=0.0 if loss_running_avg is None else loss_running_avg,
+        loss_running_avg=loss_running_avg,
         normalization=normalization,
     )
     return snapshot_path
@@ -371,6 +379,7 @@ def train(
     checkpoint_every = config["checkpoint_every"]
 
     run_name = make_run_name(config=config)
+    dataset_path = str(dataset.resolve())
     run_dir = RUNS_ROOT / run_name
     checkpoint_dir = CHECKPOINTS_ROOT / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -396,6 +405,7 @@ def train(
 
     probe_images = None
     probe_proprio = None
+    last_loss_running_avg = 0.0
     epoch = 0
     while global_step < target_steps:
         epoch_loss = 0.0
@@ -524,13 +534,16 @@ def train(
             global_step += 1
 
             running_avg_loss = epoch_loss / num_batches
+            last_loss_running_avg = running_avg_loss
             snapshot_path = maybe_save_step_checkpoint(
                 checkpoint_dir=checkpoint_dir,
                 checkpoint_every=checkpoint_every,
+                run_name=run_name,
+                config=config,
+                dataset=dataset_path,
                 epoch=epoch,
                 global_step=global_step,
                 model=model,
-                optimizer=optimizer,
                 loss_running_avg=running_avg_loss,
                 normalization=normalization,
             )
@@ -579,11 +592,13 @@ def train(
         )
         save_checkpoint(
             path=snapshot_path,
+            run_name=run_name,
+            config=config,
+            dataset=dataset_path,
             epoch=epoch - 1,
             global_step=global_step,
             model=model,
-            optimizer=optimizer,
-            loss_epoch=0.0,
+            loss_running_avg=last_loss_running_avg,
             normalization=normalization,
         )
         print(f"saved final snapshot => {snapshot_path.resolve()}")
