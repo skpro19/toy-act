@@ -135,16 +135,9 @@ write probe succeeds with the workload profile before continuing.
    contains `scripts/rollout_sweep_s3.py` and
    `.opencode/commands/scripts/vast-train/rollout-runner.sh`; do not transfer a
    local working tree.
-8. Install dependencies (`vast-train-actv2.md` step 11) plus the headless GL
-   libraries the off-screen renderer needs:
-
-   ```bash
-   apt-get update -qq && apt-get install -y -qq \
-     libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
-   uv sync --frozen --only-group train
-   ```
-
-   Verify `torch.cuda.is_available()` and import `mujoco` with `MUJOCO_GL=egl`.
+8. Install dependencies exactly as in `vast-train-actv2.md` step 11. That step
+   already installs the headless GL libraries and verifies off-screen EGL
+   rendering, which the rollout sweep renderer also needs.
 9. Transfer S3 credentials exactly as in `vast-train-actv2.md` step 12.
 10. Ensure the dataset is in the bucket and fetch it on the instance exactly as
     in `vast-train-actv2.md` step 13, using the fixed dataset path above.

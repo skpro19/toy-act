@@ -270,9 +270,28 @@ thresholds without asking the user.
    The clone already contains `scripts/`, the project files, and the
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
    `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`).
-11. On the instance, install `uv`, `awscli`, and `tmux`, then run
-    `uv sync --frozen --only-group train` and verify `torch.cuda.is_available()`,
-    printing the GPU name.
+11. On the instance, install `uv`, `awscli`, `tmux`, and the headless GL
+    libraries the checkpoint-evaluation renderer needs, then run
+    `uv sync --frozen --only-group train`. Verify `torch.cuda.is_available()`
+    (printing the GPU name) and that off-screen EGL rendering works, because
+    training now runs a robosuite rollout at every checkpoint:
+
+    ```bash
+    apt-get update -qq && apt-get install -y -qq \
+      libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
+    cd /workspace/toy-act && /root/.local/bin/uv sync --frozen --only-group train
+    cd /workspace/toy-act && MUJOCO_GL=egl /root/.local/bin/uv run --frozen \
+      --only-group train python -c 'import torch; assert torch.cuda.is_available(); \
+      print(torch.cuda.get_device_name(0)); import mujoco; \
+      model = mujoco.MjModel.from_xml_string("<mujoco/>"); data = mujoco.MjData(model); \
+      renderer = mujoco.Renderer(model, height=84, width=84); \
+      renderer.update_scene(data); frame = renderer.render(); renderer.close(); \
+      print("EGL render", frame.shape, frame.dtype)'
+    ```
+
+    Require the GPU name and `EGL render (84, 84, 3) uint8`. EGL is only used by
+    the periodic evaluation, so a broken renderer would otherwise surface at the
+    first checkpoint; stop and report if it fails rather than launching.
 12. Resolve `toy-pickplace-backup` credentials locally with
     `aws configure export-credentials`. Write them to a mode-600 temporary env
     file without printing them, append `AWS_REGION` and `S3_BUCKET`, transfer it
