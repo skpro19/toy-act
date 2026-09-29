@@ -20,7 +20,7 @@ and needs a working display; it does not provision a Vast.ai instance.
   `s3://toy-act/checkpoints/act_v2/`.
 - `--episodes <n>` — rollouts for the checkpoint (default 30).
 - `--steps <n>` — maximum steps per episode, passed as `--horizon`
-  (default 250).
+  (default 200).
 - `--version <v>` — model version; only `act_v2` is supported and it is the
   default.
 
@@ -34,7 +34,7 @@ and any `--version` other than `act_v2`.
 | Model version | `act_v2` |
 | Rendering | On-screen (GLFW), `--on-screen` |
 | Episodes | 30 (override with `--episodes`) |
-| Steps per episode | 250 (override with `--steps`) |
+| Steps per episode | 200 (override with `--steps`) |
 | Seed | 0 |
 | Dataset | `datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
 | AWS profile | `toy-pickplace-backup` |
@@ -68,7 +68,7 @@ set -euo pipefail
 RUN_NAME=<run-name>
 VERSION=act_v2
 EPISODES=30
-STEPS=250
+STEPS=200
 # Parse "$@" into RUN_NAME / VERSION / EPISODES / STEPS here.
 
 PREFIX="checkpoints/${VERSION}/${RUN_NAME}"
