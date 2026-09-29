@@ -88,8 +88,8 @@ gitignored, so it is never committed. It holds:
 
 ## Workflow
 
-1. Require `vastai`, `aws`, `jq`, `ssh`, `ssh-keyscan`, `rsync`, `git`, `tmux`,
-   `flock`, and `ss`. Verify:
+1. Require `vastai`, `aws`, `jq`, `ssh`, `ssh-keyscan`, `git`, `tmux`, `flock`,
+   `ss`, and `curl`. Verify:
    - `vastai show instances --raw` succeeds;
    - `aws sts get-caller-identity --profile toy-pickplace-backup` succeeds;
    - listing `s3://toy-act/checkpoints/act_v2/` succeeds;
@@ -98,9 +98,10 @@ gitignored, so it is never committed. It holds:
 2. Pin the code to the latest `act-v2` commit and confirm it is anonymously
    clonable, because the instance has no GitHub credentials:
    - `git fetch origin act-v2` and set `GIT_COMMIT=$(git rev-parse origin/act-v2)`;
-   - `git ls-remote https://github.com/skpro19/toy-act.git act-v2` must succeed
-     without prompting for a username. If it prompts, stop and ask the user to
-     make the repository public; never embed tokens, keys, or credentials;
+   - `GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/skpro19/toy-act.git
+     act-v2` must succeed without prompting for a username. If it fails or
+     prompts, stop and ask the user to make the repository public; never embed
+     tokens, keys, or credentials;
    - if the local working tree is dirty or local `act-v2` differs from `origin/act-v2`,
      warn the user that the clone will not include those local changes.
 3. Refuse to continue if an instance with the exact label `$INSTANCE_LABEL`
@@ -130,6 +131,11 @@ gitignored, so it is never committed. It holds:
    timestamp, machine id, and fixed reason (`gpu-start-error`). Ignore older
    records. Automatically try up to the best three non-quarantined offers in
    order. Never weaken a filter without asking the user.
+
+   Vast may charge more than the offer's advertised `dph_total` (for example
+   `$0.5356` offered vs `$0.5796` actual). Apply the `$0.80/hour` cap to the
+   offer price and record both the offer and the actual instance `dph_total` in
+   `setup.env`.
 6. Create exactly one instance using the fixed image, disk, SSH direct mode,
    and `INSTANCE_LABEL`. Reconcile the instance by exact label after every
    create attempt; do not rely only on parsing create-command output.
@@ -271,27 +277,59 @@ thresholds without asking the user.
    `.opencode/commands/scripts/vast-train/` helpers (`runner.sh`,
    `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`).
 11. On the instance, install `uv`, `awscli`, `tmux`, and the headless GL
-    libraries the checkpoint-evaluation renderer needs, then run
-    `uv sync --frozen --only-group train`. Verify `torch.cuda.is_available()`
-    (printing the GPU name) and that off-screen EGL rendering works, because
-    training now runs a robosuite rollout at every checkpoint:
+    libraries the checkpoint-evaluation renderer needs.
+
+    `scripts/train_v2.py` runs a robosuite rollout at every checkpoint, so it
+    imports `robosuite`, `robomimic`, and `mujoco`. These are declared in
+    `[project].dependencies` and sourced from pinned upstream git revisions in
+    `[tool.uv.sources]` (`robomimic` @ `d309eae`, `robosuite` @ `a071383`, v1.5.1,
+    per the official robomimic install guide). `uv sync` therefore fetches and
+    builds them itself; no `third_party/` clone or transfer is needed. The
+    compiler is required because robosuite pulls in `pynput` -> `evdev`, which
+    builds from source and otherwise fails with `No such file or directory:
+    'cc'`.
+
+    Install the tooling and sync the full locked environment (main + train):
 
     ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh          # -> /root/.local/bin/uv
+    /opt/conda/bin/pip install --quiet awscli
     apt-get update -qq && apt-get install -y -qq \
-      libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
-    cd /workspace/toy-act && /root/.local/bin/uv sync --frozen --only-group train
-    cd /workspace/toy-act && MUJOCO_GL=egl /root/.local/bin/uv run --frozen \
-      --only-group train python -c 'import torch; assert torch.cuda.is_available(); \
-      print(torch.cuda.get_device_name(0)); import mujoco; \
-      model = mujoco.MjModel.from_xml_string("<mujoco/>"); data = mujoco.MjData(model); \
-      renderer = mujoco.Renderer(model, height=84, width=84); \
-      renderer.update_scene(data); frame = renderer.render(); renderer.close(); \
-      print("EGL render", frame.shape, frame.dtype)'
+      tmux build-essential libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
+    cd /workspace/toy-act
+    /root/.local/bin/uv sync --frozen --no-default-groups --group train
     ```
 
-    Require the GPU name and `EGL render (84, 84, 3) uint8`. EGL is only used by
-    the periodic evaluation, so a broken renderer would otherwise surface at the
-    first checkpoint; stop and report if it fails rather than launching.
+    Leave the runner on its train-only mode: `uv run --frozen --only-group train`
+    syncs inexactly and does not remove the already-installed simulator
+    packages, so the rollout imports keep working at checkpoint time.
+
+    Verify `torch.cuda.is_available()` (printing the GPU name), that the rollout
+    imports load, and that off-screen EGL rendering works, because a broken
+    renderer would otherwise surface only at the first checkpoint:
+
+    ```bash
+    cd /workspace/toy-act && MUJOCO_GL=egl /root/.local/bin/uv run --frozen \
+      --only-group train python - <<'PY'
+    import torch
+    assert torch.cuda.is_available()
+    print("GPU:", torch.cuda.get_device_name(0))
+    import robosuite, robomimic, mujoco
+    print("robosuite", robosuite.__version__, "robomimic", robomimic.__version__)
+    xml = '<mujoco><worldbody><body><geom type="sphere" size="0.1"/></body></worldbody></mujoco>'
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=84, width=84)
+    renderer.update_scene(data)
+    frame = renderer.render()
+    renderer.close()
+    print("EGL render", frame.shape, frame.dtype)
+    PY
+    ```
+
+    Require the GPU name, successful `robosuite`/`robomimic` imports, and
+    `EGL render (84, 84, 3) uint8`. Stop and report if it fails rather than
+    launching.
 12. Resolve `toy-pickplace-backup` credentials locally with
     `aws configure export-credentials`. Write them to a mode-600 temporary env
     file without printing them, append `AWS_REGION` and `S3_BUCKET`, transfer it
@@ -302,8 +340,13 @@ thresholds without asking the user.
 13. Ensure the selected two-camera dataset is in the bucket, then fetch it on
     the instance:
     - if the dataset exists locally, upload it to its S3 source with the workload
-      profile, skipping upload when the object already exists with the same size;
-      if it is not local, require that the S3 object already exists;
+      profile, skipping upload when the object already exists with the same size.
+      The multi-gigabyte multipart upload can hit transient endpoint errors, so
+      set `AWS_MAX_ATTEMPTS=10 AWS_RETRY_MODE=adaptive` and retry up to three
+      times; if it is not local, require that the S3 object already exists;
+    - the workload profile can `PutObject` under `datasets/` but is **not**
+      authorized to `DeleteObject` there, so never attempt to remove dataset
+      objects with it;
     - on the instance, download it from that key to the same project-relative
       path using the transferred credentials and installed `awscli`;
     - verify the remote SHA-256 matches the local file when present; otherwise
