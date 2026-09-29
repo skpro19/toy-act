@@ -598,7 +598,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/act_v2_bs250_l1.toml"),
+        default=Path(
+            "configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml"
+        ),
         help="path to the training hyperparameter config file",
     )
     parser.add_argument(
