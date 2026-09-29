@@ -110,6 +110,16 @@ while true; do
   # checkpoint can be written between this cycle's file listing and the marker.
   # Always sync once more after observing it so that checkpoint is not missed.
   if [ -e "${CONTROL_DIR}/state/completed" ] || [ -e "${CONTROL_DIR}/state/failed" ]; then
+    # Capture the traceback after the process exits, before the watcher destroys
+    # the instance. Keep the log bounded: tqdm rewrites it at every training step.
+    if [ -f "${CONTROL_DIR}/logs/training.log" ]; then
+      tail -c 2097152 "${CONTROL_DIR}/logs/training.log" \
+        > "$RUNS_ROOT/$run_name/training-log-tail.txt"
+    fi
+    if [ -f "${CONTROL_DIR}/logs/failure-resources.txt" ]; then
+      cp "${CONTROL_DIR}/logs/failure-resources.txt" \
+        "$RUNS_ROOT/$run_name/failure-resources.txt"
+    fi
     run_backup_cycle || exit "$?"
     write_marker "${CONTROL_DIR}/state/backup-final-succeeded" "$cycle_id"
     exit 0

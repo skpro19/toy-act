@@ -362,6 +362,20 @@ on_exit() {
       TB_VERIFY="not_verified_backup_final_timeout"
     fi
   elif [ "$OUTCOME" = failure ]; then
+    # Preserve the full terminal traceback even when the final S3 sync fails.
+    if ssh_remote "tail -c 2097152 $REMOTE_LOG" \
+        > "$RUN_DIR/training-log-tail.txt" 2>>"$LOG"; then
+      log "saved terminal training log to $RUN_DIR/training-log-tail.txt"
+    else
+      rm -f "$RUN_DIR/training-log-tail.txt"
+      log "could not retrieve terminal training log"
+    fi
+    if ssh_remote "cat $REMOTE_PROJECT/.vast-train/logs/failure-resources.txt" \
+        > "$RUN_DIR/failure-resources.txt" 2>>"$LOG"; then
+      log "saved failure resource snapshot to $RUN_DIR/failure-resources.txt"
+    else
+      rm -f "$RUN_DIR/failure-resources.txt"
+    fi
     if wait_for_backup_final "$BACKUP_FINAL_SHORT_SECONDS"; then
       log "observed best-effort backup-final-succeeded"
     else

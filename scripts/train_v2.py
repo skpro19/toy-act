@@ -1,6 +1,7 @@
 """Training script for ACT v2 (CVAE + action chunking)."""
 
 import argparse
+import faulthandler
 import json
 import random
 import time
@@ -782,6 +783,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # Record Python stacks in training.log if native HDF5/CUDA code faults.
+    faulthandler.enable()
     args = parse_args()
 
     config = load_config(path=args.config)

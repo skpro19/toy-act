@@ -17,6 +17,31 @@ write_marker() {
 terminal_marker_written=false
 runner_pid=""
 
+capture_failure_resources() {
+  local exit_code="$1"
+  local path
+  {
+    printf 'timestamp=%s exit_code=%s\n' "$(date -Iseconds)" "$exit_code"
+    df -h /dev/shm
+    free -b
+    for path in \
+      /sys/fs/cgroup/memory.events \
+      /sys/fs/cgroup/memory.current \
+      /sys/fs/cgroup/memory.peak \
+      /sys/fs/cgroup/memory.max \
+      /sys/fs/cgroup/memory/memory.failcnt \
+      /sys/fs/cgroup/memory/memory.max_usage_in_bytes \
+      /sys/fs/cgroup/memory/memory.oom_control \
+      /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+      if [ -r "$path" ]; then
+        printf '%s: ' "$path"
+        tr '\n' ' ' < "$path"
+        printf '\n'
+      fi
+    done
+  } > "${CONTROL_DIR}/logs/failure-resources.txt" 2>&1
+}
+
 mark_failed() {
   local exit_code="${1:-1}"
   if [ -f "${CONTROL_DIR}/state/completed" ]; then
@@ -24,6 +49,7 @@ mark_failed() {
     return
   fi
   if [ "$terminal_marker_written" != true ]; then
+    capture_failure_resources "$exit_code"
     write_marker "${CONTROL_DIR}/state/failed" "failed ${exit_code}"
     terminal_marker_written=true
   fi
