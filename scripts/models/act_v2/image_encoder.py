@@ -1,6 +1,9 @@
 """
-- image to tokens
-- assume single camera setup 
+Encode RGB views into tokens for the ACT policy transformer encoder.
+
+Each camera view passes through the same conv stack (shared weights). Input is
+5D: (batch, num_cameras, 3, height, width). Output is
+(batch, num_cameras * tokens_per_view, d_model).
 """
 
 from typing import Tuple
@@ -25,38 +28,33 @@ class ImageEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor):
         
+        B,N,C,H,W = x.shape
+
+        x  = x.reshape(B * N, C, H, W)
         x = self.conv1(x)
         x = self.relu(x)
-
-        # print(f"x.shape => {x.shape}")
 
         x = self.conv2(x)
         x = self.relu(x)
         
-        # print(f"x.shape => {x.shape}")
-
         x = self.conv3(x)
         x = self.relu(x)
 
-        # print(f"x.shape => {x.shape}")
-
-        B,C,H,W = x.shape
-
+        # B,C,H,W = x.shape
         x = x.permute(0,2,3,1)
 
-        # print(f"[permute] x.shape => {x.shape}")
-
+        
         # [C =>  d_model] projection
         x = self.project(x)
 
-        # print(f"[project] x.shape => {x.shape}")
-
+        
         # enrich x with 2D positional sinusodial embeddings         
         x = get_se_2D(x)
-        # print(f"x.shape => {x.shape}")
-
+        
         # 2D => 1D tokens
-        x = x.reshape(B, H * W, self.d_model)
+        # x = x.reshape(B, H * W, self.d_model)
+        # x = x.reshape(B // N , N * H * W, self.d_model)
+        x = x.reshape(B , -1 , self.d_model)
         # print(f"x.shape => {x.shape}")
 
         return x
