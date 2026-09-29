@@ -59,6 +59,8 @@ CONFIG_VERSION = "v4"
 EVAL_EPISODES = 30
 EVAL_HORIZON = 250
 EVAL_SEED = 0
+DATALOADER_NUM_WORKERS = 4
+DATALOADER_TIMEOUT_SECONDS = 120
 
 CONFIG_KEYS = (
     "action_loss",
@@ -520,8 +522,10 @@ def train(
         dataset=can_ph_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=DATALOADER_NUM_WORKERS,
         pin_memory=device.type == "cuda",
+        persistent_workers=True,
+        timeout=DATALOADER_TIMEOUT_SECONDS,
         generator=dataloader_generator,
         worker_init_fn=make_dataloader_worker_init_fn(base_seed=seed),
     )
