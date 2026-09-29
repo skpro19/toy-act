@@ -1,4 +1,4 @@
-version = "v3"
+version = "v4"
 action_loss = "l1"
 batch_size = 8
 steps = 100000
@@ -10,3 +10,18 @@ beta_warmup_steps = 0
 checkpoint_every = 2000
 use_z = true
 image_keys = ["agentview_image", "robot0_eye_in_hand_image"]
+
+[tensorboard]
+activations = false
+batch_metrics = true
+denorm_l1 = false
+epoch_metrics = true
+eval = true
+hyperparams = true
+latent = false
+lr = true
+optimizer = false
+ranges = false
+sensitivity = false
+throughput = true
+timing = true

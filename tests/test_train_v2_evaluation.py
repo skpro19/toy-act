@@ -62,6 +62,10 @@ class CheckpointEvaluationTest(unittest.TestCase):
                         train_steps=20,
                         train_samples=160,
                         checkpoint_seconds=2,
+                        tensorboard={
+                            namespace: True
+                            for namespace in train_v2.TENSORBOARD_NAMESPACES
+                        },
                     )
 
             events = EventAccumulator(directory)

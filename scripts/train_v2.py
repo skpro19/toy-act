@@ -55,7 +55,7 @@ DEFAULT_DATASET = Path(
     "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
 )
 SENSITIVITY_PROBE_SIZE = 16
-CONFIG_VERSION = "v3"
+CONFIG_VERSION = "v4"
 EVAL_EPISODES = 30
 EVAL_HORIZON = 250
 EVAL_SEED = 0
@@ -69,7 +69,24 @@ CONFIG_KEYS = (
     "seed",
     "beta",
     "checkpoint_every",
+    "tensorboard",
     "version",
+)
+
+TENSORBOARD_NAMESPACES = (
+    "activations",
+    "batch_metrics",
+    "denorm_l1",
+    "epoch_metrics",
+    "eval",
+    "hyperparams",
+    "latent",
+    "lr",
+    "optimizer",
+    "ranges",
+    "sensitivity",
+    "throughput",
+    "timing",
 )
 
 ACTION_LOSS_CHOICES = frozenset({"l1", "l2"})
@@ -97,6 +114,7 @@ RUN_NAME_OMIT_KEYS = frozenset({
     "seed",
     "checkpoint_every",
     "beta_start",
+    "tensorboard",
     "version",
 })
 
@@ -140,7 +158,33 @@ def validate_config(*, config: dict) -> dict:
     if not all(isinstance(key, str) and key for key in image_keys):
         raise ValueError("image_keys must contain only non-empty strings")
 
+    config["tensorboard"] = validate_tensorboard_flags(
+        tensorboard=config["tensorboard"],
+    )
+
     return config
+
+
+def validate_tensorboard_flags(*, tensorboard: dict) -> dict:
+    if not isinstance(tensorboard, dict):
+        raise ValueError("tensorboard must be a table of boolean namespace flags")
+
+    unknown = sorted(set(tensorboard) - set(TENSORBOARD_NAMESPACES))
+    if unknown:
+        allowed = ", ".join(TENSORBOARD_NAMESPACES)
+        raise ValueError(
+            f"unknown tensorboard namespaces {unknown}; allowed namespaces: {allowed}"
+        )
+
+    flags = {}
+    for namespace in TENSORBOARD_NAMESPACES:
+        value = tensorboard.get(namespace, True)
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"tensorboard.{namespace} must be a boolean, got {value!r}"
+            )
+        flags[namespace] = value
+    return flags
 
 
 def load_config(*, path: Path) -> dict:
@@ -349,73 +393,90 @@ def evaluate_and_log_checkpoint(
     train_seconds: float,
     train_steps: int,
     train_samples: int,
-    checkpoint_seconds: float) -> Any:
+    checkpoint_seconds: float,
+    tensorboard: dict) -> Any:
     """Evaluate a saved model without changing the training RNG or model mode."""
-    numpy_state = np.random.get_state()
-    python_state = random.getstate()
-    torch_state = torch.get_rng_state()
-    cuda_states = torch.cuda.get_rng_state_all()
-    was_training = model.training
-    eval_started = time.monotonic()
-    try:
-        if env is None:
-            configure_renderer(on_screen=False)
-            camera_names = camera_names_from_image_keys(image_keys=image_keys)
-            env_meta = make_rollout_env_meta(
-                dataset_path=dataset,
-                camera_names=camera_names,
-                camera_height=IMG_DIMS[0],
-                camera_width=IMG_DIMS[1],
+    run_eval = tensorboard["eval"]
+    summary = None
+    rollout_seconds = 0.0
+    env_steps = 0
+
+    if run_eval:
+        numpy_state = np.random.get_state()
+        python_state = random.getstate()
+        torch_state = torch.get_rng_state()
+        cuda_states = torch.cuda.get_rng_state_all()
+        was_training = model.training
+        eval_started = time.monotonic()
+        try:
+            if env is None:
+                configure_renderer(on_screen=False)
+                camera_names = camera_names_from_image_keys(image_keys=image_keys)
+                env_meta = make_rollout_env_meta(
+                    dataset_path=dataset,
+                    camera_names=camera_names,
+                    camera_height=IMG_DIMS[0],
+                    camera_width=IMG_DIMS[1],
+                )
+                env = create_rollout_env(env_meta=env_meta, on_screen=False, write_video=False)
+
+            model.eval()
+            rollouts = []
+            with torch.inference_mode():
+                for episode_idx in range(EVAL_EPISODES):
+                    np.random.seed(EVAL_SEED + episode_idx)
+                    rollouts.append(run_rollout(
+                        model=model,
+                        env=env,
+                        device=device,
+                        normalization=normalization,
+                        image_keys=image_keys,
+                        horizon=EVAL_HORIZON,
+                        terminate_on_success=True,
+                        render=False,
+                        video_writer=None,
+                        video_skip=1,
+                    ))
+        finally:
+            model.train(was_training)
+            np.random.set_state(numpy_state)
+            random.setstate(python_state)
+            torch.set_rng_state(torch_state)
+            torch.cuda.set_rng_state_all(cuda_states)
+
+        rollout_seconds = time.monotonic() - eval_started
+        summary = summarize_rollouts(rollouts=rollouts)
+        env_steps = sum(int(rollout["horizon"]) for rollout in rollouts)
+
+    if run_eval:
+        writer.add_scalar("eval/success_rate", summary["success_rate"], global_step)
+        writer.add_scalar("eval/return_mean", summary["return_mean"], global_step)
+        writer.add_scalar("eval/horizon_mean", summary["horizon_mean"], global_step)
+
+    if tensorboard["throughput"]:
+        writer.add_scalar("throughput/train_steps_per_sec", train_steps / train_seconds, global_step)
+        writer.add_scalar("throughput/train_samples_per_sec", train_samples / train_seconds, global_step)
+        if run_eval:
+            writer.add_scalar(
+                "throughput/rollout_env_steps_per_sec", env_steps / rollout_seconds, global_step,
             )
-            env = create_rollout_env(env_meta=env_meta, on_screen=False, write_video=False)
+            writer.add_scalar(
+                "throughput/rollout_episodes_per_min", EVAL_EPISODES * 60 / rollout_seconds,
+                global_step,
+            )
 
-        model.eval()
-        rollouts = []
-        with torch.inference_mode():
-            for episode_idx in range(EVAL_EPISODES):
-                np.random.seed(EVAL_SEED + episode_idx)
-                rollouts.append(run_rollout(
-                    model=model,
-                    env=env,
-                    device=device,
-                    normalization=normalization,
-                    image_keys=image_keys,
-                    horizon=EVAL_HORIZON,
-                    terminate_on_success=True,
-                    render=False,
-                    video_writer=None,
-                    video_skip=1,
-                ))
-    finally:
-        model.train(was_training)
-        np.random.set_state(numpy_state)
-        random.setstate(python_state)
-        torch.set_rng_state(torch_state)
-        torch.cuda.set_rng_state_all(cuda_states)
+    if tensorboard["timing"]:
+        if run_eval:
+            writer.add_scalar("timing/rollout_seconds", rollout_seconds, global_step)
+        writer.add_scalar("timing/checkpoint_seconds", checkpoint_seconds, global_step)
+        writer.add_scalar("timing/elapsed_hours", (time.monotonic() - run_started) / 3600, global_step)
 
-    rollout_seconds = time.monotonic() - eval_started
-    summary = summarize_rollouts(rollouts=rollouts)
-    env_steps = sum(int(rollout["horizon"]) for rollout in rollouts)
-    writer.add_scalar("eval/success_rate", summary["success_rate"], global_step)
-    writer.add_scalar("eval/return_mean", summary["return_mean"], global_step)
-    writer.add_scalar("eval/horizon_mean", summary["horizon_mean"], global_step)
-    writer.add_scalar("throughput/train_steps_per_sec", train_steps / train_seconds, global_step)
-    writer.add_scalar("throughput/train_samples_per_sec", train_samples / train_seconds, global_step)
-    writer.add_scalar(
-        "throughput/rollout_env_steps_per_sec", env_steps / rollout_seconds, global_step,
-    )
-    writer.add_scalar(
-        "throughput/rollout_episodes_per_min", EVAL_EPISODES * 60 / rollout_seconds,
-        global_step,
-    )
-    writer.add_scalar("timing/rollout_seconds", rollout_seconds, global_step)
-    writer.add_scalar("timing/checkpoint_seconds", checkpoint_seconds, global_step)
-    writer.add_scalar("timing/elapsed_hours", (time.monotonic() - run_started) / 3600, global_step)
     writer.flush()
-    print(
-        f"step {global_step}: rollout success={summary['num_success']}/{EVAL_EPISODES} "
-        f"return={summary['return_mean']:.3f} elapsed={rollout_seconds:.1f}s"
-    )
+    if run_eval:
+        print(
+            f"step {global_step}: rollout success={summary['num_success']}/{EVAL_EPISODES} "
+            f"return={summary['return_mean']:.3f} elapsed={rollout_seconds:.1f}s"
+        )
     return env
 
 
@@ -426,6 +487,19 @@ def train(
     seed = config["seed"]
     batch_size = config["batch_size"]
     lr = config["lr"]
+
+    tensorboard = config["tensorboard"]
+    log_activations = tensorboard["activations"]
+    log_batch_metrics = tensorboard["batch_metrics"]
+    log_denorm_l1 = tensorboard["denorm_l1"]
+    log_epoch_metrics = tensorboard["epoch_metrics"]
+    log_hyperparams = tensorboard["hyperparams"]
+    log_latent = tensorboard["latent"]
+    log_lr = tensorboard["lr"]
+    log_optimizer = tensorboard["optimizer"]
+    log_ranges = tensorboard["ranges"]
+    log_sensitivity = tensorboard["sensitivity"]
+    track_epoch_losses = log_batch_metrics or log_epoch_metrics
 
     seed_everything(seed=seed)
 
@@ -467,7 +541,10 @@ def train(
     denorm_l1_fn = nn.L1Loss(reduction="mean")
     optimizer = optim.Adam(params=model.parameters(), lr=lr, betas=(0.9, 0.999))
     model_parameters = list(model.parameters())
-    activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
+    if log_activations:
+        activation_norms, activation_hook_handles = register_activation_norm_hooks(model=model)
+    else:
+        activation_norms, activation_hook_handles = {}, []
     normalization = can_ph_dataset.normalization
     action_mean = torch.from_numpy(normalization.action_mean).to(device=device).view(1, 1, -1)
     action_std = torch.from_numpy(normalization.action_std).to(device=device).view(1, 1, -1)
@@ -510,6 +587,10 @@ def train(
     print(f"rollout evaluation => {EVAL_EPISODES} episodes, horizon {EVAL_HORIZON}")
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
+    enabled_namespaces = [
+        namespace for namespace in TENSORBOARD_NAMESPACES if tensorboard[namespace]
+    ]
+    print(f"tensorboard namespaces => {', '.join(enabled_namespaces)}")
 
     probe_images = None
     probe_proprio = None
@@ -538,7 +619,7 @@ def train(
             img = batch_dict["images"].to(device, non_blocking=True)
             proprio = batch_dict["proprio"].to(device, non_blocking=True)
             actions = batch_dict["target_actions"].to(device, non_blocking=True)
-            if probe_images is None:
+            if log_sensitivity and probe_images is None:
                 # Fix real observations from the first batch for every epoch.
                 probe_images = img[:SENSITIVITY_PROBE_SIZE].detach().clone()
                 probe_proprio = proprio[:SENSITIVITY_PROBE_SIZE].detach().clone()
@@ -550,95 +631,110 @@ def train(
             loss = action_loss + beta_t * kl_loss
 
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                max_norm=float("inf"),
-            ).item()
-            params_before = snapshot_parameters(parameters=model_parameters)
+            if log_optimizer:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_norm=float("inf"),
+                ).item()
+                params_before = snapshot_parameters(parameters=model_parameters)
             optimizer.step()
 
             batch_loss = loss.item()
-            batch_action_loss = action_loss.item()
-            batch_kl_loss = kl_loss.item()
-            batch_weighted_kl_loss = beta_t * batch_kl_loss
-
             epoch_loss += batch_loss
-            epoch_action_loss += batch_action_loss
-            epoch_kl_loss += batch_kl_loss
-            epoch_weighted_kl_loss += batch_weighted_kl_loss
+            if track_epoch_losses:
+                batch_action_loss = action_loss.item()
+                batch_kl_loss = kl_loss.item()
+                batch_weighted_kl_loss = beta_t * batch_kl_loss
+                epoch_action_loss += batch_action_loss
+                epoch_kl_loss += batch_kl_loss
+                epoch_weighted_kl_loss += batch_weighted_kl_loss
             num_batches += 1
             pbar.set_postfix(loss=f"{batch_loss:.4f}")
 
             with torch.no_grad():
-                learning_rate = optimizer.param_groups[0]["lr"]
-                adam_exp_avg_norm, adam_exp_avg_sq_norm = compute_adam_moment_norms(
-                    optimizer=optimizer,
-                )
-                param_norm = compute_global_l2_norm(tensors=model_parameters)
-                update_norm = compute_global_update_norm(
-                    parameters=model_parameters,
-                    before=params_before,
-                )
+                if log_lr:
+                    learning_rate = optimizer.param_groups[0]["lr"]
+                if log_optimizer:
+                    adam_exp_avg_norm, adam_exp_avg_sq_norm = compute_adam_moment_norms(
+                        optimizer=optimizer,
+                    )
+                    param_norm = compute_global_l2_norm(tensors=model_parameters)
+                    update_norm = compute_global_update_norm(
+                        parameters=model_parameters,
+                        before=params_before,
+                    )
 
-                pred_physical = pred_actions.detach() * action_std + action_mean
-                target_physical = actions * action_std + action_mean
-                pred_joint = pred_physical[..., :JOINT_DIMS]
-                pred_gripper = pred_physical[..., JOINT_DIMS:]
-                target_joint = target_physical[..., :JOINT_DIMS]
-                target_gripper = target_physical[..., JOINT_DIMS:]
+                if log_denorm_l1 or log_ranges:
+                    pred_physical = pred_actions.detach() * action_std + action_mean
+                    target_physical = actions * action_std + action_mean
+                    pred_joint = pred_physical[..., :JOINT_DIMS]
+                    pred_gripper = pred_physical[..., JOINT_DIMS:]
+                    target_joint = target_physical[..., :JOINT_DIMS]
+                    target_gripper = target_physical[..., JOINT_DIMS:]
 
-                batch_l1_joint = denorm_l1_fn(pred_joint, target_joint).item()
-                batch_l1_gripper = denorm_l1_fn(pred_gripper, target_gripper).item()
+                if log_denorm_l1:
+                    batch_l1_joint = denorm_l1_fn(pred_joint, target_joint).item()
+                    batch_l1_gripper = denorm_l1_fn(pred_gripper, target_gripper).item()
 
-                pred_joint_min = pred_joint.min().item()
-                pred_joint_max = pred_joint.max().item()
-                pred_gripper_min = pred_gripper.min().item()
-                pred_gripper_max = pred_gripper.max().item()
-                target_joint_min = target_joint.min().item()
-                target_joint_max = target_joint.max().item()
-                target_gripper_min = target_gripper.min().item()
-                target_gripper_max = target_gripper.max().item()
+                if log_ranges:
+                    pred_joint_min = pred_joint.min().item()
+                    pred_joint_max = pred_joint.max().item()
+                    pred_gripper_min = pred_gripper.min().item()
+                    pred_gripper_max = pred_gripper.max().item()
+                    target_joint_min = target_joint.min().item()
+                    target_joint_max = target_joint.max().item()
+                    target_gripper_min = target_gripper.min().item()
+                    target_gripper_max = target_gripper.max().item()
 
-                mu_norm = mu.detach().float().norm().item()
-                log_sigma_x2_mean = log_sigma_x2.detach().mean().item()
-                sigma_mean = log_sigma_x2.detach().exp().mean().item()
+                if log_latent:
+                    mu_norm = mu.detach().float().norm().item()
+                    log_sigma_x2_mean = log_sigma_x2.detach().mean().item()
+                    sigma_mean = log_sigma_x2.detach().exp().mean().item()
 
-                if batch_loss > 0.0:
+                if log_batch_metrics and batch_loss > 0.0:
                     batch_kl_fraction = batch_weighted_kl_loss / batch_loss
                 else:
                     batch_kl_fraction = 0.0
 
-            writer.add_scalar("batch_metrics/loss", batch_loss, global_step)
-            writer.add_scalar("batch_metrics/action_loss", batch_action_loss, global_step)
-            writer.add_scalar("batch_metrics/kl_loss", batch_kl_loss, global_step)
-            writer.add_scalar("batch_metrics/weighted_kl_loss", batch_weighted_kl_loss, global_step)
-            writer.add_scalar("batch_metrics/kl_fraction", batch_kl_fraction, global_step)
-            writer.add_scalar("hyperparams/beta", beta_t, global_step)
-            writer.add_scalar("optimizer/grad_norm_global", grad_norm, global_step)
-            writer.add_scalar("optimizer/param_norm_global", param_norm, global_step)
-            writer.add_scalar("optimizer/update_norm_global", update_norm, global_step)
-            writer.add_scalar("optimizer/lr", learning_rate, global_step)
-            writer.add_scalar("optimizer/adam_exp_avg_norm", adam_exp_avg_norm, global_step)
-            writer.add_scalar("optimizer/adam_exp_avg_sq_norm", adam_exp_avg_sq_norm, global_step)
-            writer.add_scalar("denorm_l1/joint", batch_l1_joint, global_step)
-            writer.add_scalar("denorm_l1/gripper", batch_l1_gripper, global_step)
-            writer.add_scalar("ranges/pred_min_joint", pred_joint_min, global_step)
-            writer.add_scalar("ranges/pred_max_joint", pred_joint_max, global_step)
-            writer.add_scalar("ranges/pred_min_gripper", pred_gripper_min, global_step)
-            writer.add_scalar("ranges/pred_max_gripper", pred_gripper_max, global_step)
-            writer.add_scalar("ranges/target_min_joint", target_joint_min, global_step)
-            writer.add_scalar("ranges/target_max_joint", target_joint_max, global_step)
-            writer.add_scalar("ranges/target_min_gripper", target_gripper_min, global_step)
-            writer.add_scalar("ranges/target_max_gripper", target_gripper_max, global_step)
-            writer.add_scalar("latent/mu_norm", mu_norm, global_step)
-            writer.add_scalar("latent/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
-            writer.add_scalar("latent/sigma_mean", sigma_mean, global_step)
-            for tag in ACTIVATION_HOOK_TAGS:
-                writer.add_scalar(
-                    f"activations/{tag}",
-                    activation_norms[tag],
-                    global_step,
-                )
+            if log_batch_metrics:
+                writer.add_scalar("batch_metrics/loss", batch_loss, global_step)
+                writer.add_scalar("batch_metrics/action_loss", batch_action_loss, global_step)
+                writer.add_scalar("batch_metrics/kl_loss", batch_kl_loss, global_step)
+                writer.add_scalar("batch_metrics/weighted_kl_loss", batch_weighted_kl_loss, global_step)
+                writer.add_scalar("batch_metrics/kl_fraction", batch_kl_fraction, global_step)
+            if log_hyperparams:
+                writer.add_scalar("hyperparams/beta", beta_t, global_step)
+            if log_optimizer:
+                writer.add_scalar("optimizer/grad_norm_global", grad_norm, global_step)
+                writer.add_scalar("optimizer/param_norm_global", param_norm, global_step)
+                writer.add_scalar("optimizer/update_norm_global", update_norm, global_step)
+                writer.add_scalar("optimizer/adam_exp_avg_norm", adam_exp_avg_norm, global_step)
+                writer.add_scalar("optimizer/adam_exp_avg_sq_norm", adam_exp_avg_sq_norm, global_step)
+            if log_lr:
+                writer.add_scalar("optimizer/lr", learning_rate, global_step)
+            if log_denorm_l1:
+                writer.add_scalar("denorm_l1/joint", batch_l1_joint, global_step)
+                writer.add_scalar("denorm_l1/gripper", batch_l1_gripper, global_step)
+            if log_ranges:
+                writer.add_scalar("ranges/pred_min_joint", pred_joint_min, global_step)
+                writer.add_scalar("ranges/pred_max_joint", pred_joint_max, global_step)
+                writer.add_scalar("ranges/pred_min_gripper", pred_gripper_min, global_step)
+                writer.add_scalar("ranges/pred_max_gripper", pred_gripper_max, global_step)
+                writer.add_scalar("ranges/target_min_joint", target_joint_min, global_step)
+                writer.add_scalar("ranges/target_max_joint", target_joint_max, global_step)
+                writer.add_scalar("ranges/target_min_gripper", target_gripper_min, global_step)
+                writer.add_scalar("ranges/target_max_gripper", target_gripper_max, global_step)
+            if log_latent:
+                writer.add_scalar("latent/mu_norm", mu_norm, global_step)
+                writer.add_scalar("latent/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
+                writer.add_scalar("latent/sigma_mean", sigma_mean, global_step)
+            if log_activations:
+                for tag in ACTIVATION_HOOK_TAGS:
+                    writer.add_scalar(
+                        f"activations/{tag}",
+                        activation_norms[tag],
+                        global_step,
+                    )
             global_step += 1
             train_samples += img.shape[0]
 
@@ -675,6 +771,7 @@ def train(
                     train_steps=global_step - last_evaluated_step,
                     train_samples=train_samples,
                     checkpoint_seconds=checkpoint_seconds,
+                    tensorboard=tensorboard,
                 )
                 last_evaluated_step = global_step
                 train_samples = 0
@@ -686,32 +783,35 @@ def train(
         if num_batches == 0:
             break
 
-        avg_loss = epoch_loss / num_batches
-        avg_action_loss = epoch_action_loss / num_batches
-        avg_kl_loss = epoch_kl_loss / num_batches
-        avg_weighted_kl_loss = epoch_weighted_kl_loss / num_batches
-        epoch_beta = beta_at_step(
-            step=max(global_step - 1, 0),
-            beta_start=beta_start,
-            beta=beta,
-            beta_warmup_steps=beta_warmup_steps,
-        )
-        if avg_loss > 0.0:
-            kl_fraction = avg_weighted_kl_loss / avg_loss
-        else:
-            kl_fraction = 0.0
+        if log_epoch_metrics:
+            avg_loss = epoch_loss / num_batches
+            avg_action_loss = epoch_action_loss / num_batches
+            avg_kl_loss = epoch_kl_loss / num_batches
+            avg_weighted_kl_loss = epoch_weighted_kl_loss / num_batches
+            epoch_beta = beta_at_step(
+                step=max(global_step - 1, 0),
+                beta_start=beta_start,
+                beta=beta,
+                beta_warmup_steps=beta_warmup_steps,
+            )
+            if avg_loss > 0.0:
+                kl_fraction = avg_weighted_kl_loss / avg_loss
+            else:
+                kl_fraction = 0.0
 
-        writer.add_scalar("epoch_metrics/loss", avg_loss, epoch)
-        writer.add_scalar("epoch_metrics/action_loss", avg_action_loss, epoch)
-        writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
-        writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
-        writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
-        writer.add_scalar("epoch_metrics/beta", epoch_beta, epoch)
-        image_l1, proprio_l1 = measure_observation_sensitivity(
-            model=model, images=probe_images, proprio=probe_proprio,
-        )
-        writer.add_scalar("sensitivity/image_swap_l1", image_l1, epoch)
-        writer.add_scalar("sensitivity/proprio_swap_l1", proprio_l1, epoch)
+            writer.add_scalar("epoch_metrics/loss", avg_loss, epoch)
+            writer.add_scalar("epoch_metrics/action_loss", avg_action_loss, epoch)
+            writer.add_scalar("epoch_metrics/kl_loss", avg_kl_loss, epoch)
+            writer.add_scalar("epoch_metrics/weighted_kl_loss", avg_weighted_kl_loss, epoch)
+            writer.add_scalar("epoch_metrics/kl_fraction", kl_fraction, epoch)
+            writer.add_scalar("epoch_metrics/beta", epoch_beta, epoch)
+
+        if log_sensitivity:
+            image_l1, proprio_l1 = measure_observation_sensitivity(
+                model=model, images=probe_images, proprio=probe_proprio,
+            )
+            writer.add_scalar("sensitivity/image_swap_l1", image_l1, epoch)
+            writer.add_scalar("sensitivity/proprio_swap_l1", proprio_l1, epoch)
 
         epoch += 1
 
@@ -747,6 +847,7 @@ def train(
             train_steps=global_step - last_evaluated_step,
             train_samples=train_samples,
             checkpoint_seconds=time.monotonic() - checkpoint_started,
+            tensorboard=tensorboard,
         )
 
     if eval_env is not None:

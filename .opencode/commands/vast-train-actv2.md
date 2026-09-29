@@ -3,7 +3,7 @@ description: Train ACT v2 (CVAE) on a temporary Vast.ai RTX 4090 with S3 checkpo
 agent: build
 ---
 
-Run `scripts/train_v2.py` with a v3 config on a newly provisioned Vast.ai instance
+Run `scripts/train_v2.py` with a v4 config on a newly provisioned Vast.ai instance
 and store every completed checkpoint in `s3://toy-act/checkpoints/act_v2/`.
 Provision the latest
 commit of the `act-v2` branch by cloning GitHub on the instance; do not transfer the
@@ -56,13 +56,13 @@ cleanup.
 
 ## Config selection
 
-Before provisioning, ask the user which v3 training config to use with the
-interactive question tool. List the up-to-5 most-recently-modified v3
+Before provisioning, ask the user which v4 training config to use with the
+interactive question tool. List the up-to-5 most-recently-modified v4
 `configs/*.toml` files (newest first) and present each path as an option,
 defaulting to `configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml`.
 Record the selected path as `CONFIG_PATH`, verify it exists and is git-tracked
 (`git ls-files --error-unmatch "$CONFIG_PATH"`), and load it with
-`scripts.train_v2.load_config` to validate its v3 schema. Read its
+`scripts.train_v2.load_config` to validate its v4 schema. Read its
 `checkpoint_every`, `steps`, and ordered `image_keys` into `CHECKPOINT_EVERY`,
 `STEPS`, and `IMAGE_KEYS` for the later verification step. Validate that the
 selected config's cameras are supported by `scripts/rollout.py`; confirm the

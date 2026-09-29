@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_HORIZON = 400
 DEFAULT_CAMERA = "agentview"
-CHECKPOINT_CONFIG_VERSION = "v3"
+CHECKPOINT_CONFIG_VERSIONS = ("v3", "v4")
 CHECKPOINT_CONFIG_KEYS = (
     "action_loss",
     "batch_size",
@@ -240,9 +240,10 @@ def training_config_from_checkpoint(*, checkpoint: dict) -> dict:
     if missing:
         raise KeyError(f"checkpoint config missing required keys: {missing}")
 
-    if config["version"] != CHECKPOINT_CONFIG_VERSION:
+    if config["version"] not in CHECKPOINT_CONFIG_VERSIONS:
+        allowed = ", ".join(repr(version) for version in CHECKPOINT_CONFIG_VERSIONS)
         raise ValueError(
-            f"checkpoint config version must be {CHECKPOINT_CONFIG_VERSION!r}, "
+            f"checkpoint config version must be one of {{{allowed}}}, "
             f"got {config['version']!r}"
         )
 
