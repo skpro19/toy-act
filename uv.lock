@@ -3331,9 +3331,6 @@ dependencies = [
     { name = "h5py" },
     { name = "huggingface-hub" },
     { name = "ipython" },
-    { name = "mujoco" },
-    { name = "robomimic" },
-    { name = "robosuite" },
     { name = "torch" },
 ]
 
@@ -3345,6 +3342,9 @@ dev = [
 train = [
     { name = "boto3" },
     { name = "h5py" },
+    { name = "mujoco" },
+    { name = "robomimic" },
+    { name = "robosuite" },
     { name = "tensorboard" },
     { name = "torch" },
     { name = "tqdm" },
@@ -3355,9 +3355,6 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "huggingface-hub", specifier = ">=1.32.0" },
     { name = "ipython", specifier = ">=9.17.1" },
-    { name = "mujoco", specifier = "==3.2.3" },
-    { name = "robomimic", git = "https://github.com/ARISE-Initiative/robomimic.git?rev=d309eaecc18acf4152a830a895a6984b8ac71b05" },
-    { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=a071383d53568ab798eb315c0e95357911be922d" },
     { name = "torch", specifier = "==2.10.0" },
 ]
 
@@ -3369,6 +3366,9 @@ dev = [
 train = [
     { name = "boto3", specifier = ">=1.43.98" },
     { name = "h5py", specifier = ">=3.16.0" },
+    { name = "mujoco", specifier = "==3.2.3" },
+    { name = "robomimic", git = "https://github.com/ARISE-Initiative/robomimic.git?rev=d309eaecc18acf4152a830a895a6984b8ac71b05" },
+    { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=a071383d53568ab798eb315c0e95357911be922d" },
     { name = "tensorboard", specifier = ">=2.21.0" },
     { name = "torch", specifier = "==2.10.0" },
     { name = "tqdm", specifier = ">=4.70.1" },
