@@ -1,26 +1,17 @@
-"""Evaluate a trained ACTV1 checkpoint in PickPlaceCan.
+"""Evaluate a trained ACT v2 checkpoint in PickPlaceCan.
 
 Examples:
     uv run python scripts/rollout.py \\
-        --checkpoint checkpoints/act_v1/.../epoch_010.pt \\
+        --checkpoint checkpoints/act_v2/.../step_000002000.pt \\
         --n-rollouts 20
 
     uv run python scripts/rollout.py \\
-        --checkpoint checkpoints/act_v1/.../last.pt \\
+        --checkpoint checkpoints/act_v2/.../step_000002000.pt \\
         --no-on-screen --n-rollouts 20
 
     uv run python scripts/rollout.py \\
-        --checkpoint checkpoints/act_v1/.../last.pt \\
+        --checkpoint checkpoints/act_v2/.../step_000002000.pt \\
         --video replays/rollout.mp4 --n-rollouts 5 --seed 0
-
-    uv run python scripts/rollout.py \\
-        --model-version act_v2 --no-use-z \\
-        --checkpoint checkpoints/act_v2/.../last.pt --n-rollouts 20
-
-    uv run python scripts/rollout.py \\
-        --model-version act_v2 \\
-        --image-keys agentview_image robot0_eye_in_hand_image \\
-        --checkpoint checkpoints/act_v2/.../last.pt --n-rollouts 20
 """
 
 from __future__ import annotations
@@ -37,24 +28,37 @@ import numpy as np
 import torch
 
 from scripts.dataset import NormalizationStats, build_proprio, image_to_tensor
-from scripts.models.act_v1 import ACTV1
-from scripts.models.act_v1.config import (
+from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
     IMG_DIMS,
     JOINT_DIMS,
-    NUM_LAYERS,
     N_HEAD,
+    NUM_LAYERS,
     PROPRIO_DIMS,
+    Z_DIMS,
 )
-from scripts.models.act_v2.config import Z_DIMS
 from scripts.models.act_v2.model import ACTV2
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
 DEFAULT_HORIZON = 400
 DEFAULT_CAMERA = "agentview"
-DEFAULT_IMAGE_KEYS = (f"{DEFAULT_CAMERA}_image",)
+CHECKPOINT_CONFIG_VERSION = "v3"
+CHECKPOINT_CONFIG_KEYS = (
+    "action_loss",
+    "batch_size",
+    "steps",
+    "image_keys",
+    "lr",
+    "seed",
+    "beta",
+    "checkpoint_every",
+    "version",
+    "beta_start",
+    "beta_warmup_steps",
+    "use_z",
+)
 ROBOSUITE_CAMERAS = (
     "agentview",
     "frontview",
@@ -78,31 +82,13 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         type=Path,
         required=True,
-        help="path to ACTV1 checkpoint (.pt)",
-    )
-    parser.add_argument(
-        "--model-version",
-        choices=("act_v1", "act_v2"),
-        default="act_v1",
-        help="checkpoint model architecture",
-    )
-    parser.add_argument(
-        "--use-z",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="act_v2: decode with latent z (use --no-use-z for no-z checkpoints)",
+        help="path to ACT v2 checkpoint (.pt) saved by scripts/train_v2.py",
     )
     parser.add_argument(
         "--dataset",
         type=Path,
         default=DEFAULT_DATASET,
         help="robomimic low-dim hdf5 used to recreate PickPlaceCan",
-    )
-    parser.add_argument(
-        "--image-keys",
-        nargs="+",
-        default=list(DEFAULT_IMAGE_KEYS),
-        help="observation image keys fed to the model, in camera order",
     )
     parser.add_argument("--n-rollouts", type=int, default=20, help="number of evaluation episodes")
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON, help="max steps per episode")
@@ -212,11 +198,53 @@ def create_rollout_env(
     )
 
 
+def load_checkpoint(*, checkpoint_path: Path, device: torch.device) -> dict:
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+
+def training_config_from_checkpoint(*, checkpoint: dict) -> dict:
+    config = checkpoint.get("config")
+    if not isinstance(config, dict):
+        raise KeyError(
+            "checkpoint is missing 'config'; use a checkpoint saved by scripts/train_v2.py"
+        )
+
+    missing = [key for key in CHECKPOINT_CONFIG_KEYS if key not in config]
+    if missing:
+        raise KeyError(f"checkpoint config missing required keys: {missing}")
+
+    if config["version"] != CHECKPOINT_CONFIG_VERSION:
+        raise ValueError(
+            f"checkpoint config version must be {CHECKPOINT_CONFIG_VERSION!r}, "
+            f"got {config['version']!r}"
+        )
+
+    image_keys = config["image_keys"]
+    if not isinstance(image_keys, list) or len(image_keys) == 0:
+        raise ValueError("checkpoint config 'image_keys' must be a non-empty list")
+    if not all(isinstance(key, str) and key for key in image_keys):
+        raise ValueError("checkpoint config 'image_keys' must contain non-empty strings")
+
+    if not isinstance(config["use_z"], bool):
+        raise ValueError(
+            f"checkpoint config 'use_z' must be a bool, got {type(config['use_z']).__name__}"
+        )
+
+    return config
+
+
+def rollout_settings_from_checkpoint(*, checkpoint: dict) -> tuple[bool, tuple[str, ...]]:
+    config = training_config_from_checkpoint(checkpoint=checkpoint)
+    use_z = config["use_z"]
+    image_keys = tuple(config["image_keys"])
+    return use_z, image_keys
+
+
 def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
     if "normalization" not in checkpoint:
         raise KeyError(
-            "checkpoint is missing 'normalization' stats; retrain with the current "
-            "scripts/train_v1.py so rollouts can reproduce the training-time preprocessing"
+            "checkpoint is missing 'normalization' stats; use a checkpoint saved by "
+            "scripts/train_v2.py"
         )
     stats = checkpoint["normalization"]
     return NormalizationStats(
@@ -229,30 +257,21 @@ def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
 
 def load_model(
     *,
-    checkpoint_path: Path,
+    checkpoint: dict,
     device: torch.device,
-    model_version: str,
     use_z: bool,
-) -> tuple[ACTV1 | ACTV2, NormalizationStats]:
-    if model_version == "act_v2":
-        model = ACTV2(
-            d_model=D_MODEL,
-            nhead=N_HEAD,
-            num_layers=NUM_LAYERS,
-            z_dims=Z_DIMS,
-            action_chunk_size=ACTION_CHUNK_SIZE,
-            proprio_dims=PROPRIO_DIMS,
-            use_z=use_z,
-        )
-    else:
-        model = ACTV1(
-            d_model=D_MODEL,
-            nhead=N_HEAD,
-            num_layers=NUM_LAYERS,
-            action_chunk_size=ACTION_CHUNK_SIZE,
-            proprio_dims=PROPRIO_DIMS,
-        )
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+) -> tuple[ACTV2, NormalizationStats]:
+    model = ACTV2(
+        d_model=D_MODEL,
+        nhead=N_HEAD,
+        num_layers=NUM_LAYERS,
+        z_dims=Z_DIMS,
+        action_chunk_size=ACTION_CHUNK_SIZE,
+        proprio_dims=PROPRIO_DIMS,
+        use_z=use_z,
+    )
+    if "model" not in checkpoint:
+        raise KeyError("checkpoint is missing 'model' state dict")
     model.load_state_dict(checkpoint["model"])
     model.to(device=device)
     model.eval()
@@ -334,31 +353,21 @@ def denormalize_action(
 
 def predict_action_chunk(
     *,
-    model: ACTV1 | ACTV2,
+    model: ACTV2,
     obs: dict,
     device: torch.device,
     normalization: NormalizationStats,
     image_keys: tuple[str, ...],
 ) -> np.ndarray:
     images = obs_images_to_tensor(obs=obs, image_keys=image_keys, device=device)
-    if isinstance(model, ACTV2):
-        img_tensor = images.unsqueeze(0)
-    else:
-        if images.shape[0] != 1:
-            raise ValueError(
-                f"act_v1 expects exactly one image key, got {len(image_keys)}: {image_keys}"
-            )
-        img_tensor = images
+    img_tensor = images.unsqueeze(0)
     proprio_tensor = obs_to_proprio_tensor(
         obs=obs,
         device=device,
         normalization=normalization,
     )
     with torch.no_grad():
-        if isinstance(model, ACTV2):
-            pred = model.infer(proprio=proprio_tensor, img=img_tensor)
-        else:
-            pred = model(img_tensor=img_tensor, proprio_tensor=proprio_tensor)
+        pred = model.infer(proprio=proprio_tensor, img=img_tensor)
     return denormalize_action(action=pred[0].detach().cpu().numpy(), normalization=normalization)
 
 
@@ -388,7 +397,7 @@ def set_render_window_title(*, env, title: str | None) -> None:
 
 def run_rollout(
     *,
-    model: ACTV1 | ACTV2,
+    model: ACTV2,
     env,
     device: torch.device,
     normalization: NormalizationStats,
@@ -500,6 +509,16 @@ def main() -> None:
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    checkpoint = load_checkpoint(checkpoint_path=args.checkpoint, device=device)
+    use_z, image_keys = rollout_settings_from_checkpoint(checkpoint=checkpoint)
+    model, normalization = load_model(checkpoint=checkpoint, device=device, use_z=use_z)
+
+    run_name = checkpoint.get("run_name")
+    if run_name is not None:
+        print(f"run_name => {run_name}")
+    print(f"use_z => {use_z}")
+    print(f"image_keys => {list(image_keys)}")
+
     env_meta = make_rollout_env_meta(
         dataset_path=args.dataset,
         camera_height=IMG_DIMS[0],
@@ -510,16 +529,6 @@ def main() -> None:
         on_screen=on_screen,
         write_video=write_video,
     )
-    model, normalization = load_model(
-        checkpoint_path=args.checkpoint,
-        device=device,
-        model_version=args.model_version,
-        use_z=args.use_z,
-    )
-    if args.model_version == "act_v2":
-        print(f"use_z => {args.use_z}")
-    image_keys = tuple(args.image_keys)
-    print(f"image_keys => {list(image_keys)}")
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
     rollouts: list[dict[str, float | int | bool]] = []

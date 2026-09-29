@@ -72,7 +72,19 @@ def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
     )
 
 
-def load_model(*, checkpoint_path: Path, device: torch.device) -> tuple[ACTV2, NormalizationStats]:
+def training_config_from_checkpoint(*, checkpoint: dict) -> dict | None:
+    config = checkpoint.get("config")
+    if isinstance(config, dict):
+        return config
+    return None
+
+
+def load_model(*, checkpoint_path: Path, device: torch.device) -> tuple[ACTV2, NormalizationStats, dict | None]:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    train_config = training_config_from_checkpoint(checkpoint=checkpoint)
+    use_z = True
+    if train_config is not None:
+        use_z = bool(train_config.get("use_z", True))
     model = ACTV2(
         d_model=D_MODEL,
         nhead=N_HEAD,
@@ -80,13 +92,13 @@ def load_model(*, checkpoint_path: Path, device: torch.device) -> tuple[ACTV2, N
         z_dims=Z_DIMS,
         proprio_dims=PROPRIO_DIMS,
         action_chunk_size=ACTION_CHUNK_SIZE,
+        use_z=use_z,
     )
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
     model.to(device=device)
     model.eval()
     normalization = normalization_from_checkpoint(checkpoint=checkpoint)
-    return model, normalization
+    return model, normalization, train_config
 
 
 def make_subset_indices(*, num_samples: int, limit: int, seed: int) -> np.ndarray:
@@ -321,8 +333,11 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device => {device}")
 
-    model, _ = load_model(checkpoint_path=args.checkpoint, device=device)
-    dataset = CanPhDataset(file=str(args.dataset), k=ACTION_CHUNK_SIZE)
+    model, _, train_config = load_model(checkpoint_path=args.checkpoint, device=device)
+    dataset_kwargs: dict = {"file": str(args.dataset), "k": ACTION_CHUNK_SIZE}
+    if train_config is not None and train_config.get("image_keys"):
+        dataset_kwargs["image_keys"] = tuple(str(key) for key in train_config["image_keys"])
+    dataset = CanPhDataset(**dataset_kwargs)
 
     indices = make_subset_indices(num_samples=len(dataset), limit=args.limit, seed=args.seed)
     print(f"analyzing {len(indices)} / {len(dataset)} samples")
