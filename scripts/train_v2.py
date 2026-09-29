@@ -2,10 +2,14 @@
 
 import argparse
 import json
+import random
+import time
 import tomllib
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 from torch import optim
@@ -17,6 +21,7 @@ from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
+    IMG_DIMS,
     JOINT_DIMS,
     N_HEAD,
     NUM_LAYERS,
@@ -24,6 +29,15 @@ from scripts.models.act_v2.config import (
     Z_DIMS,
 )
 from scripts.models.act_v2.model import ACTV2
+from scripts.rollout import (
+    camera_names_from_image_keys,
+    close_env,
+    configure_renderer,
+    create_rollout_env,
+    make_rollout_env_meta,
+    run_rollout,
+    summarize_rollouts,
+)
 from scripts.train_v1 import (
     compute_adam_moment_norms,
     compute_global_l2_norm,
@@ -41,6 +55,9 @@ DEFAULT_DATASET = Path(
 )
 SENSITIVITY_PROBE_SIZE = 16
 CONFIG_VERSION = "v3"
+EVAL_EPISODES = 30
+EVAL_HORIZON = 250
+EVAL_SEED = 0
 
 CONFIG_KEYS = (
     "action_loss",
@@ -317,6 +334,90 @@ def maybe_save_step_checkpoint(
     return snapshot_path
 
 
+def evaluate_and_log_checkpoint(
+    *,
+    model: ACTV2,
+    env: Any | None,
+    dataset: Path,
+    image_keys: tuple[str, ...],
+    normalization: NormalizationStats,
+    device: torch.device,
+    writer: SummaryWriter,
+    global_step: int,
+    run_started: float,
+    train_seconds: float,
+    train_steps: int,
+    train_samples: int,
+    checkpoint_seconds: float) -> Any:
+    """Evaluate a saved model without changing the training RNG or model mode."""
+    numpy_state = np.random.get_state()
+    python_state = random.getstate()
+    torch_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all()
+    was_training = model.training
+    eval_started = time.monotonic()
+    try:
+        if env is None:
+            configure_renderer(on_screen=False)
+            camera_names = camera_names_from_image_keys(image_keys=image_keys)
+            env_meta = make_rollout_env_meta(
+                dataset_path=dataset,
+                camera_names=camera_names,
+                camera_height=IMG_DIMS[0],
+                camera_width=IMG_DIMS[1],
+            )
+            env = create_rollout_env(env_meta=env_meta, on_screen=False, write_video=False)
+
+        model.eval()
+        rollouts = []
+        with torch.inference_mode():
+            for episode_idx in range(EVAL_EPISODES):
+                np.random.seed(EVAL_SEED + episode_idx)
+                rollouts.append(run_rollout(
+                    model=model,
+                    env=env,
+                    device=device,
+                    normalization=normalization,
+                    image_keys=image_keys,
+                    horizon=EVAL_HORIZON,
+                    terminate_on_success=True,
+                    render=False,
+                    video_writer=None,
+                    video_skip=1,
+                ))
+    finally:
+        model.train(was_training)
+        np.random.set_state(numpy_state)
+        random.setstate(python_state)
+        torch.set_rng_state(torch_state)
+        torch.cuda.set_rng_state_all(cuda_states)
+
+    rollout_seconds = time.monotonic() - eval_started
+    summary = summarize_rollouts(rollouts=rollouts)
+    env_steps = sum(int(rollout["horizon"]) for rollout in rollouts)
+    writer.add_scalar("eval/success_rate", summary["success_rate"], global_step)
+    writer.add_scalar("eval/return_mean", summary["return_mean"], global_step)
+    writer.add_scalar("eval/horizon_mean", summary["horizon_mean"], global_step)
+    writer.add_scalar("throughput/train_steps_per_sec", train_steps / train_seconds, global_step)
+    writer.add_scalar("throughput/train_samples_per_sec", train_samples / train_seconds, global_step)
+    writer.add_scalar(
+        "throughput/rollout_env_steps_per_sec", env_steps / rollout_seconds, global_step,
+    )
+    writer.add_scalar(
+        "throughput/rollout_episodes_per_min", EVAL_EPISODES * 60 / rollout_seconds,
+        global_step,
+    )
+    writer.add_scalar("timing/rollout_seconds", rollout_seconds, global_step)
+    writer.add_scalar("timing/checkpoint_seconds", checkpoint_seconds, global_step)
+    writer.add_scalar("timing/elapsed_hours", (time.monotonic() - run_started) / 3600, global_step)
+    writer.flush()
+    print(
+        f"step {global_step}: rollout success={summary['num_success']}/{EVAL_EPISODES} "
+        f"return={summary['return_mean']:.3f} elapsed={rollout_seconds:.1f}s"
+    )
+    return env
+
+
 def train(
     *,
     config: dict,
@@ -386,6 +487,11 @@ def train(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     save_run_config(run_dir=run_dir, run_name=run_name, config=config)
     writer = SummaryWriter(log_dir=str(run_dir))
+    run_started = time.monotonic()
+    train_interval_started = run_started
+    last_evaluated_step = 0
+    train_samples = 0
+    eval_env = None
     print(f"seed => {seed}")
     print(f"device => {device}")
     print(f"gpu => {torch.cuda.get_device_name(device)}")
@@ -400,6 +506,7 @@ def train(
         print(f"beta => {beta:g}")
     print(f"target_steps => {target_steps}")
     print(f"checkpoint_every => {checkpoint_every} steps")
+    print(f"rollout evaluation => {EVAL_EPISODES} episodes, horizon {EVAL_HORIZON}")
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
 
@@ -532,9 +639,11 @@ def train(
                     global_step,
                 )
             global_step += 1
+            train_samples += img.shape[0]
 
             running_avg_loss = epoch_loss / num_batches
             last_loss_running_avg = running_avg_loss
+            checkpoint_started = time.monotonic()
             snapshot_path = maybe_save_step_checkpoint(
                 checkpoint_dir=checkpoint_dir,
                 checkpoint_every=checkpoint_every,
@@ -548,7 +657,27 @@ def train(
                 normalization=normalization,
             )
             if snapshot_path is not None:
+                checkpoint_seconds = time.monotonic() - checkpoint_started
+                train_seconds = max(checkpoint_started - train_interval_started, 1e-9)
                 print(f"saved snapshot => {snapshot_path.resolve()}")
+                eval_env = evaluate_and_log_checkpoint(
+                    model=model,
+                    env=eval_env,
+                    dataset=dataset,
+                    image_keys=tuple(config["image_keys"]),
+                    normalization=normalization,
+                    device=device,
+                    writer=writer,
+                    global_step=global_step,
+                    run_started=run_started,
+                    train_seconds=train_seconds,
+                    train_steps=global_step - last_evaluated_step,
+                    train_samples=train_samples,
+                    checkpoint_seconds=checkpoint_seconds,
+                )
+                last_evaluated_step = global_step
+                train_samples = 0
+                train_interval_started = time.monotonic()
 
             if global_step >= target_steps:
                 break
@@ -586,6 +715,7 @@ def train(
         epoch += 1
 
     if global_step > 0 and global_step % checkpoint_every != 0:
+        checkpoint_started = time.monotonic()
         snapshot_path = checkpoint_path_for_step(
             checkpoint_dir=checkpoint_dir,
             global_step=global_step,
@@ -602,7 +732,24 @@ def train(
             normalization=normalization,
         )
         print(f"saved final snapshot => {snapshot_path.resolve()}")
+        eval_env = evaluate_and_log_checkpoint(
+            model=model,
+            env=eval_env,
+            dataset=dataset,
+            image_keys=tuple(config["image_keys"]),
+            normalization=normalization,
+            device=device,
+            writer=writer,
+            global_step=global_step,
+            run_started=run_started,
+            train_seconds=max(checkpoint_started - train_interval_started, 1e-9),
+            train_steps=global_step - last_evaluated_step,
+            train_samples=train_samples,
+            checkpoint_seconds=time.monotonic() - checkpoint_started,
+        )
 
+    if eval_env is not None:
+        close_env(eval_env)
     for handle in activation_hook_handles:
         handle.remove()
     writer.close()

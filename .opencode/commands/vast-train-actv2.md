@@ -3,8 +3,9 @@ description: Train ACT v2 (CVAE) on a temporary Vast.ai RTX 4090 with S3 checkpo
 agent: build
 ---
 
-Run `scripts/train_v2.py` on a newly provisioned Vast.ai instance and store every
-completed checkpoint in `s3://toy-act/checkpoints/act_v2/`. Provision the latest
+Run `scripts/train_v2.py` with a v3 config on a newly provisioned Vast.ai instance
+and store every completed checkpoint in `s3://toy-act/checkpoints/act_v2/`.
+Provision the latest
 commit of the `act-v2` branch by cloning GitHub on the instance; do not transfer the
 local working tree. Fetch the dataset from S3 at its project-relative path
 instead of copying it from the local machine.
@@ -29,8 +30,8 @@ including cleanup.
 | S3 destination | `s3://toy-act/checkpoints/act_v2/` |
 | Git remote | `https://github.com/skpro19/toy-act.git` |
 | Git branch | `act-v2` |
-| Dataset | `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` |
-| Dataset S3 source | `s3://toy-act/datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` |
+| Dataset | `datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
+| Dataset S3 source | `s3://toy-act/datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
 | Remote project | `/workspace/toy-act` |
 | Remote control dir | `/workspace/toy-act/.vast-train` |
 | Remote TensorBoard | `127.0.0.1:6006` on the instance |
@@ -55,15 +56,19 @@ cleanup.
 
 ## Config selection
 
-Before provisioning, ask the user which training config to use with the
-interactive question tool. List the up-to-5 most-recently-modified
+Before provisioning, ask the user which v3 training config to use with the
+interactive question tool. List the up-to-5 most-recently-modified v3
 `configs/*.toml` files (newest first) and present each path as an option,
-defaulting to `configs/act_v2_bs250_l1.toml`. Record the selected path as
-`CONFIG_PATH`, verify it
-exists and is git-tracked (`git ls-files --error-unmatch "$CONFIG_PATH"`), and
-read its `checkpoint_every` and `epochs` values into `CHECKPOINT_EVERY` and
-`EPOCHS` for use in the later verification step. The selected config is part of
-the git clone on the instance, so no extra transfer is needed.
+defaulting to `configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml`.
+Record the selected path as `CONFIG_PATH`, verify it exists and is git-tracked
+(`git ls-files --error-unmatch "$CONFIG_PATH"`), and load it with
+`scripts.train_v2.load_config` to validate its v3 schema. Read its
+`checkpoint_every`, `steps`, and ordered `image_keys` into `CHECKPOINT_EVERY`,
+`STEPS`, and `IMAGE_KEYS` for the later verification step. Validate that the
+selected config's cameras are supported by `scripts/rollout.py`; confirm the
+downloaded dataset contains every requested `image_key` before launching.
+The selected config is part of the git clone on the instance, so no extra
+transfer is needed.
 
 ## Local run state
 
@@ -88,7 +93,7 @@ gitignored, so it is never committed. It holds:
    - `vastai show instances --raw` succeeds;
    - `aws sts get-caller-identity --profile toy-pickplace-backup` succeeds;
    - listing `s3://toy-act/checkpoints/act_v2/` succeeds;
-   - `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` exists locally;
+   - the selected dataset is present locally or can be read from its S3 source;
    - `uv lock --check` succeeds.
 2. Pin the code to the latest `act-v2` commit and confirm it is anonymously
    clonable, because the instance has no GitHub credentials:
@@ -275,14 +280,16 @@ thresholds without asking the user.
     `/workspace/toy-act/.vast-train` first), chmod it 600 remotely, and delete
     the local temporary file. Never transfer `VAST_API_KEY` or print AWS
     credentials.
-13. Ensure the dataset is in the bucket, then fetch it on the instance:
-    - upload `datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5` to
-      `s3://toy-act/datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5`
-      with the workload profile, skipping the upload when the object already
-      exists with the same size;
+13. Ensure the selected two-camera dataset is in the bucket, then fetch it on
+    the instance:
+    - if the dataset exists locally, upload it to its S3 source with the workload
+      profile, skipping upload when the object already exists with the same size;
+      if it is not local, require that the S3 object already exists;
     - on the instance, download it from that key to the same project-relative
       path using the transferred credentials and installed `awscli`;
-    - verify the remote SHA-256 matches the local file before launching.
+    - verify the remote SHA-256 matches the local file when present; otherwise
+      verify its byte size against S3 `head-object` and open it with `h5py` to
+      check the requested camera keys before launching.
 14. Create the remote control directories
     `/workspace/toy-act/.vast-train/{logs,state}` and start TensorBoard in a
     detached tmux session named `tensorboard`:
@@ -324,6 +331,7 @@ thresholds without asking the user.
     tmux new-session -d -s train \
       -e TRAIN_MODULE=scripts.train_v2 \
       -e TRAIN_CONFIG="$CONFIG_PATH" \
+      -e TRAIN_DATASET="datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5" \
       'bash /workspace/toy-act/.opencode/commands/scripts/vast-train/runner.sh'
     ```
 
@@ -341,8 +349,11 @@ thresholds without asking the user.
     `state/backup-last-succeeded`; fail immediately if `state/backup-failed`
     appears or `ckpt-bkp` exits. The wrapper discovers the single run directory,
     then synchronizes `checkpoints/act_v2/<run>` and `runs/act_v2/<run>` to S3
-    every 120 seconds using `scripts/s3_backup.py`. Training only writes immutable
-    periodic snapshots (`epoch_*.pt`), so every checkpoint is safe to upload.
+    every 120 seconds using `scripts/s3_backup.py`. Training writes immutable
+    periodic and final snapshots (`step_*.pt`), so every checkpoint is safe to
+    upload.
+    The same run directory holds TensorBoard training, rollout success, and
+    training/rollout throughput scalars.
 18. Hand off to a detached local watcher and stop babysitting. Launch the
     watcher with `setsid`/`nohup` so it survives the interactive agent returning,
     and make the watcher own step-7 cleanup and the local `VAST_API_KEY`.
@@ -368,12 +379,14 @@ thresholds without asking the user.
       flooding;
     - on success, wait for `state/backup-final-succeeded`, read the run name from
       `state/run-name`, then verify locally through the workload profile that S3
-      contains every expected periodic snapshot for the `CHECKPOINT_EVERY` and
-      `EPOCHS` values read from the selected config, using `scripts/s3_backup.py
-      has-files` with `S3_CHECKPOINT_BASE=checkpoints/act_v2` and
-      `--components checkpoints`; also verify the run's recorded `config.json`
-      reached S3 using `has-files` with `S3_RUNS_BASE=runs/act_v2` and
-      `--components runs`;
+      contains every expected `step_*.pt` snapshot (multiples of
+      `CHECKPOINT_EVERY` up to `STEPS`, plus `STEPS` when it is not a multiple)
+      using `scripts/s3_backup.py has-files` with
+      `S3_CHECKPOINT_BASE=checkpoints/act_v2` and `--components checkpoints`;
+      also verify the run's recorded `config.json` reached S3 using `has-files`
+      with `S3_RUNS_BASE=runs/act_v2` and `--components runs`. Verify that the
+      uploaded TensorBoard event files contain the final rollout success and
+      throughput scalars;
     - before every `vastai destroy`, enforce the cleanup gate again: setup may
       destroy before `RUN_STARTED=yes`; after that point require
       `TERMINAL_CONFIRMED=yes`. If the gate is closed, log that cleanup was

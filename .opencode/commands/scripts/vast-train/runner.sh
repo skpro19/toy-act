@@ -65,6 +65,7 @@ setsid bash -c '
   set -o pipefail
   train_args=()
   test -n "${TRAIN_CONFIG:-}" && train_args+=(--config "$TRAIN_CONFIG")
+  test -n "${TRAIN_DATASET:-}" && train_args+=(--dataset "$TRAIN_DATASET")
   test -n "${TRAIN_RESUME:-}" && train_args+=(--resume)
   test -n "${TRAIN_OLD_RUN_NAME:-}" && train_args+=(--old-run-name "$TRAIN_OLD_RUN_NAME")
   test -n "${TRAIN_EPOCHS:-}" && train_args+=(--epochs "$TRAIN_EPOCHS")

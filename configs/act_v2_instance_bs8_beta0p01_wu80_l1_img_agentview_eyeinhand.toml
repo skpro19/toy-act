@@ -1,7 +1,7 @@
 version = "v3"
 action_loss = "l1"
 batch_size = 8
-steps = 100 * 1000
+steps = 100000
 lr = 1e-4
 seed = 0
 beta = 0.01
