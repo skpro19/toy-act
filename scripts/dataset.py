@@ -9,7 +9,6 @@ from torch.utils.data import Dataset
 import h5py
 
 from scripts.models.act_v1.config import ACTION_CHUNK_SIZE, PROPRIO_DIMS
-from scripts.models.act_v2.config import IMAGE_KEYS
 
 
 NORMALIZATION_EPSILON = 1e-6
@@ -134,7 +133,7 @@ class CanPhDataset(Dataset):
         self,
         *,
         file: str,
-        image_keys: tuple[str, ...] = IMAGE_KEYS,
+        image_keys: tuple[str, ...],
         k: int = ACTION_CHUNK_SIZE,
     ) -> None:
         self.file = file

@@ -19,7 +19,6 @@ from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
     ACTION_CHUNK_SIZE,
     D_MODEL,
-    IMAGE_KEYS,
     JOINT_DIMS,
     N_HEAD,
     NUM_LAYERS,
@@ -39,12 +38,16 @@ from scripts.train_v1 import (
 
 RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
+DEFAULT_DATASET = Path(
+    "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
+)
 SENSITIVITY_PROBE_SIZE = 16
 
 CONFIG_KEYS = (
     "action_loss",
     "batch_size",
     "epochs",
+    "image_keys",
     "lr",
     "seed",
     "beta",
@@ -65,7 +68,9 @@ RUN_NAME_FIELDS = (
     ("batch_size", "bs", "{:d}"),
     ("lr", "lr", "{:.0e}"),
     ("beta", "beta", "{:g}"),
+    ("beta_warmup_epochs", "wu", "{:d}"),
     ("epochs", "ep", "{:d}"),
+    ("image_keys", "img", "{:s}"),
     ("use_z", "use_z", "{:d}"),
     ("action_loss", "", "{:s}"),
 )
@@ -73,7 +78,6 @@ RUN_NAME_FIELDS = (
 RUN_NAME_OMIT_KEYS = frozenset({
     "seed",
     "checkpoint_every",
-    "beta_warmup_epochs",
     "beta_start",
 })
 
@@ -96,6 +100,12 @@ def validate_config(*, config: dict) -> dict:
     if action_loss not in ACTION_LOSS_CHOICES:
         allowed = ", ".join(sorted(ACTION_LOSS_CHOICES))
         raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
+
+    image_keys = config["image_keys"]
+    if not isinstance(image_keys, list) or len(image_keys) == 0:
+        raise ValueError("image_keys must be a non-empty list of HDF5 obs key names")
+    if not all(isinstance(key, str) and key for key in image_keys):
+        raise ValueError("image_keys must contain only non-empty strings")
 
     return config
 
@@ -186,6 +196,8 @@ def format_config_value(
     template: str) -> str:
     if isinstance(value, bool):
         value = int(value)
+    if isinstance(value, (list, tuple)):
+        value = "-".join(str(item) for item in value)
     rendered = template.format(value)
     return "".join(
         character if character.isalnum() or character in "._-" else "-"
@@ -290,6 +302,7 @@ def save_checkpoint(
 def train(
     *,
     config: dict,
+    dataset: Path,
     resume_from: Path | None,
     resume_events: Path | None) -> None:
     seed = config["seed"]
@@ -306,7 +319,8 @@ def train(
     device = torch.device("cuda")
 
     can_ph_dataset = CanPhDataset(
-        file="datasets/can/ph/2026-09-19_03-14-50_act_agentview.hdf5",
+        file=str(dataset),
+        image_keys=tuple(config["image_keys"]),
         k=ACTION_CHUNK_SIZE,
     )
     dataloader_generator = make_dataloader_generator(seed=seed)
@@ -401,7 +415,7 @@ def train(
         for batch_dict in pbar:
             optimizer.zero_grad()
 
-            img = batch_dict["image"].to(device, non_blocking=True)
+            img = batch_dict["images"].to(device, non_blocking=True)
             proprio = batch_dict["proprio"].to(device, non_blocking=True)
             actions = batch_dict["target_actions"].to(device, non_blocking=True)
             if probe_images is None:
@@ -554,6 +568,12 @@ def parse_args() -> argparse.Namespace:
         help="path to the training hyperparameter config file",
     )
     parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DEFAULT_DATASET,
+        help="path to the CAN PH HDF5 training dataset",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="resume training from an existing run instead of starting fresh",
@@ -594,7 +614,12 @@ def main() -> None:
     if args.epochs is not None:
         config["epochs"] = args.epochs
 
-    train(config=config, resume_from=resume_from, resume_events=resume_events)
+    train(
+        config=config,
+        dataset=args.dataset,
+        resume_from=resume_from,
+        resume_events=resume_events,
+    )
 
 
 if __name__ == "__main__":
