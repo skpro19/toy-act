@@ -7,7 +7,7 @@ with its best checkpoint (the highest training-time `eval/success_rate`), rolled
 out for 10 episodes of up to 200 steps in `PickPlaceCan`, and rendered from both
 cameras (`agentview` and `robot0_eye_in_hand`). The rollouts are concatenated
 into a per-run GIF, and a combined 2x2 GIF shows all four runs side by side. Each
-panel is captioned with the run's batch size and its rollout success score.
+panel is captioned with the run's batch size and its logged training eval score.
 
 <img src="assets/rollout-two-camera/two_camera_rollout_2x2.gif" width="720" alt="Two-camera rollout comparison">
 
@@ -56,7 +56,7 @@ PYTHONPATH=. uv run python scripts/utils/record_rollout_episodes.py \
 PYTHONPATH=. uv run python scripts/utils/build_rollout_gifs.py \
   --recordings-dir assets/rollout-two-camera/_recordings \
   --out-dir assets/rollout-two-camera \
-  --scale 2 --frame-stride 8 --fps 10
+  --scale 1 --frame-stride 12 --fps 8
 
 # keep both cameras in the combined grid (default: agentview only)
 #   --combined-cameras agentview robot0_eye_in_hand
