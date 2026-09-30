@@ -8,10 +8,10 @@
 
 <table align="center">
   <thead>
-    <tr><th>lr</th><th>bs</th><th>num-steps</th><th>beta</th><th>action-loss</th></tr>
+    <tr><th>lr</th><th>bs</th><th>num-steps</th><th>beta</th><th>action-loss</th><th>architecture</th></tr>
   </thead>
   <tbody>
-    <tr><td>1e-4</td><td>64</td><td>100000</td><td>0.01</td><td>l1</td></tr>
+    <tr><td>1e-4</td><td>64</td><td>100000</td><td>0.01</td><td>l1</td><td>cvae encoder-decoder</td></tr>
   </tbody>
 </table>
 
