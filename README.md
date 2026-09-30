@@ -15,3 +15,5 @@
 ### num-cameras
 
 <img src="assets/rollout-camera-ablation/num_cameras_grid.gif" alt="Num-cameras ablation rollout comparison">
+
+<img src="assets/eval-curves/num_cameras_eval_curves.png" alt="Num-cameras ablation eval curves">

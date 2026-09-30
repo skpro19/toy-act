@@ -104,7 +104,8 @@ def run_label(*, run_dir: Path, config: dict[str, Any]) -> str:
     if batch_size is None:
         return run_dir.name
     if num_cameras:
-        return f"bs={batch_size} · {num_cameras} cameras"
+        camera_word = "camera" if num_cameras == 1 else "cameras"
+        return f"bs={batch_size} · {num_cameras} {camera_word}"
     return f"bs={batch_size}"
 
 
