@@ -6,7 +6,7 @@ training dynamics of a run can be inspected at a glance:
 - ``batch_metrics_horizontal.png``: action, weighted KL, and total losses (smoothed)
 - ``denorm_l1_horizontal.png``: denormalized joint and gripper L1 errors (smoothed)
 - ``eval_horizontal.png``: episode horizon and success rate
-- ``latent_horizontal.png``: latent ``mu`` norm and ``sigma`` mean
+- ``latent_log_scale.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
 
 Example:
     uv run python scripts/utils/plot_training_run.py \\
@@ -143,7 +143,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "latent_horizontal.png",
+        output_path=args.output_dir / "latent_log_scale.png",
         title="Latent statistics",
         metrics=LATENT_METRICS,
         smooth=False,

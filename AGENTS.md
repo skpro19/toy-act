@@ -6,6 +6,10 @@
 - refer `.opencode/rules/git.md` for git related instructions
 - for `.canvas.tsx` files, follow `.cursor/rules/canvas.mdc` (design template based on `cs231n-multi-head-attention.canvas.tsx`)
 
+## GitHub README images
+- GitHub can continue showing an older image when a README image is overwritten at the same URL. When changing a displayed PNG or GIF, give the updated image a new descriptive filename and update its README reference and generating script together; remove the obsolete image if it is no longer used.
+- Before reporting an image update as live, verify the README reference and image blob on the pushed branch (which may not be the repository's default branch). Include the explicit branch URL when pointing someone to the result.
+
 ## AWS Administration
 - source `.env` or always use `AWS_PROFILE=toy-pickplace-backup` when running `aws` CLI commands for S3; the profile covers `s3://toy-pickplace` and prefix-scoped access to `s3://toy-act` (`checkpoints/act_v1`, `checkpoints/act_v2`, `runs/act_v1`, `runs/act_v2`, `datasets`), region is `ap-south-1`
 - `s3://toy-act` access is prefix-scoped, so a prefix that is not in the policy (for example a new act version) is denied even though other prefixes work; `AccessDenied` on list or `403` on read almost always means the prefix is missing from the policy, not bad credentials

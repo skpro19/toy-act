@@ -24,7 +24,7 @@ Denormalized joint and gripper action errors:
 
 Latent statistics:
 
-<img src="assets/training-run/latent_horizontal.png" alt="Latent mu norm and sigma mean over training steps">
+<img src="assets/training-run/latent_log_scale.png" alt="Log-scale latent mu norm and sigma mean over training steps">
 
 <details>
 <summary>Run details</summary>
