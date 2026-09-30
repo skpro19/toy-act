@@ -3,10 +3,10 @@
 Produces one figure per metric group, with a single panel per metric, so the
 training dynamics of a run can be inspected at a glance:
 
-- ``batch_metrics.png``: action, weighted KL, and total losses (smoothed)
-- ``denorm_l1.png``: denormalized joint and gripper L1 errors (smoothed)
-- ``eval.png``: episode horizon and success rate
-- ``latent.png``: latent ``mu`` norm and ``sigma`` mean
+- ``batch_metrics_horizontal.png``: action, weighted KL, and total losses (smoothed)
+- ``denorm_l1_horizontal.png``: denormalized joint and gripper L1 errors (smoothed)
+- ``eval_horizontal.png``: episode horizon and success rate
+- ``latent_horizontal.png``: latent ``mu`` norm and ``sigma`` mean
 
 Example:
     uv run python scripts/utils/plot_training_run.py \\
@@ -119,7 +119,7 @@ def main() -> None:
 
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "batch_metrics.png",
+        output_path=args.output_dir / "batch_metrics_horizontal.png",
         title="Batch metrics (500-step moving average)",
         metrics=BATCH_METRICS,
         smooth=True,
@@ -127,7 +127,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "denorm_l1.png",
+        output_path=args.output_dir / "denorm_l1_horizontal.png",
         title="Denormalized action error (500-step moving average)",
         metrics=DENORM_METRICS,
         smooth=True,
@@ -135,7 +135,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "eval.png",
+        output_path=args.output_dir / "eval_horizontal.png",
         title="Evaluation during training",
         metrics=EVAL_METRICS,
         smooth=False,
@@ -143,11 +143,11 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "latent.png",
+        output_path=args.output_dir / "latent_horizontal.png",
         title="Latent statistics",
         metrics=LATENT_METRICS,
         smooth=False,
-        log_scale=False,
+        log_scale=True,
     )
 
 
