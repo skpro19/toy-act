@@ -8,9 +8,14 @@ A toy ACT policy implemented from scratch to understand CVAEs, action chunking, 
 
 ## Training curve
 
-| lr | bs | num-steps | beta | action-loss |
-| --- | --- | --- | --- | --- |
-| 1e-4 | 64 | 100000 | 0.01 | l1 |
+<table align="center">
+  <thead>
+    <tr><th>lr</th><th>bs</th><th>num-steps</th><th>beta</th><th>action-loss</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1e-4</td><td>64</td><td>100000</td><td>0.01</td><td>l1</td></tr>
+  </tbody>
+</table>
 
 <img src="assets/training-run/eval_uniform_panels.png" alt="Evaluation episode horizon and success rate over training steps">
 
