@@ -26,6 +26,7 @@ replays/
 rollouts/
 
 .vast-train-local/
+.pi/
 
 ISSUES.md
 debug/
