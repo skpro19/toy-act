@@ -2,15 +2,15 @@
 
 A toy ACT policy implemented from scratch to understand CVAEs, action chunking, temporal ensembling, and attention.
 
-## Rollout
-
-Two-camera policy (batch size 64) on the Can task. The rollout uses the checkpoint at step 56,000, which reached 90% success in training-time evaluation.
-
 <p align="center">
   <img src="assets/rollout/bs64_two_camera_rollout.gif" alt="Two-camera ACT policy rollout on the Can task">
 </p>
 
-### Training run
+## Training curve
+
+| lr | bs | num-steps | beta | action-loss |
+| --- | --- | --- | --- | --- |
+| 1e-4 | 64 | 100000 | 0.01 | l1 |
 
 <img src="assets/training-run/eval_uniform_panels.png" alt="Evaluation episode horizon and success rate over training steps">
 
