@@ -6,10 +6,11 @@ Qualitative comparison of the four two-camera ACT v2 runs. Each run is evaluated
 with its best checkpoint (the highest training-time `eval/success_rate`), rolled
 out for 10 episodes of up to 200 steps in `PickPlaceCan`, and rendered from both
 cameras (`agentview` and `robot0_eye_in_hand`). The rollouts are concatenated
-into a per-run GIF, and a combined 2x2 GIF shows all four runs side by side. Each
-panel is captioned with the run's batch size and its logged training eval score.
+into a per-run GIF, and a combined horizontal GIF shows all four runs side by
+side. Each panel is captioned with the run's batch size and its logged training
+eval score.
 
-<img src="assets/rollout-two-camera/two_camera_rollout_2x2.gif" alt="Two-camera rollout comparison">
+<img src="assets/rollout-two-camera/two_camera_rollout_grid.gif" alt="Two-camera rollout comparison">
 
 | Batch | Best checkpoint | Training eval | Rollout (10 ep) |
 |-------|-----------------|---------------|-----------------|
@@ -22,8 +23,8 @@ panel is captioned with the run's batch size and its logged training eval score.
 
 - `assets/rollout-two-camera/bs{8,16,32,64}_two_camera_rollout.gif` — per-run
   GIFs showing both cameras.
-- `assets/rollout-two-camera/two_camera_rollout_2x2.gif` — combined 2x2 grid
-  showing the `agentview` camera only.
+- `assets/rollout-two-camera/two_camera_rollout_grid.gif` — combined horizontal
+  grid showing the `agentview` camera only.
 - `assets/rollout-two-camera/best_checkpoints.json` — manifest of the selected
   checkpoints and scores.
 - `assets/rollout-two-camera/_recordings/` — raw per-run mp4s and metadata, kept
@@ -52,11 +53,11 @@ PYTHONPATH=. uv run python scripts/utils/record_rollout_episodes.py \
   --out-dir assets/rollout-two-camera/_recordings \
   --episodes 10 --horizon 200
 
-# 3. build the per-run GIFs and the combined 2x2 grid
+# 3. build the per-run GIFs and the combined horizontal grid
 PYTHONPATH=. uv run python scripts/utils/build_rollout_gifs.py \
   --recordings-dir assets/rollout-two-camera/_recordings \
   --out-dir assets/rollout-two-camera \
-  --scale 1 --frame-stride 12 --fps 8
+  --scale 1 --frame-stride 12 --fps 8 --rows 1 --cols 4
 
 # keep both cameras in the combined grid (default: agentview only)
 #   --combined-cameras agentview robot0_eye_in_hand
