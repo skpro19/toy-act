@@ -136,7 +136,7 @@ def build_runs(*, runs_dir: Path, run_names: list[str] | None) -> list[dict[str,
 
 
 def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
-    fig, (success_ax, horizon_ax) = plt.subplots(1, 2, figsize=(11, 4))
+    fig, (success_ax, horizon_ax) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
 
     for run in runs:
         label = run_label(run_dir=run["run_dir"], config=run["config"])
@@ -152,15 +152,18 @@ def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
     success_ax.set_ylim(0.0, 1.0)
     horizon_ax.set_title(HORIZON_TAG)
     horizon_ax.set_ylabel("mean horizon")
+    horizon_ax.set_xlabel("training step")
 
     for ax in (success_ax, horizon_ax):
-        ax.set_xlabel("training step")
         ax.grid(alpha=0.3)
-        ax.legend()
+
+    handles, labels = success_ax.get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="center left", bbox_to_anchor=(0.01, 0.5))
 
     if title:
         fig.suptitle(title)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0.18, 0.0, 1.0, 1.0))
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output)
     plt.close(fig)
