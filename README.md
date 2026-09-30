@@ -1,7 +1,5 @@
 # toy-act
 
-A toy ACT policy implemented from scratch to understand CVAEs, action chunking, temporal ensembling, and attention.
-
 <p align="center">
   <img src="assets/rollout/bs64_two_camera_rollout.gif" alt="Two-camera ACT policy rollout on the Can task">
 </p>
