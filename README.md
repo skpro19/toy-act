@@ -25,7 +25,8 @@
 
 ## Ablations
 
-### Batch size
+<details>
+<summary>Batch size</summary>
 
 <img src="assets/eval-curves/batch_size_eval_curves_legend_right.png" alt="Batch-size ablation eval curves">
 
@@ -33,10 +34,15 @@
   <img src="assets/rollout-two-camera/two_camera_rollout_grid.gif" alt="Batch-size ablation rollout comparison">
 </p>
 
-### Number of cameras
+</details>
+
+<details>
+<summary>Number of cameras</summary>
 
 <img src="assets/eval-curves/num_cameras_eval_curves_legend_right.png" alt="Num-cameras ablation eval curves">
 
 <p align="center">
   <img src="assets/rollout-camera-ablation/num_cameras_grid.gif" alt="Num-cameras ablation rollout comparison">
 </p>
+
+</details>
