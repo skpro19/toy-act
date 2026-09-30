@@ -1,17 +1,18 @@
 """Plot training-time eval curves for a set of runs side by side.
 
 Reads the ``eval/success_rate`` and ``eval/horizon_mean`` scalars that
-``scripts/train_v2.py`` writes to TensorBoard and renders them as two panels so
-an ablation (for example batch size) can be compared at a glance. Runs are
-ordered by their ``batch_size`` from ``config.json`` (falling back to the
-``bs<N>`` token in the run directory name).
+``scripts/train_v2.py`` writes to TensorBoard and renders them as a row of two
+panels so an ablation (for example batch size) can be compared at a glance. The
+canvas and panel sizes match ``plot_training_run.py`` so every curve in the
+README lines up. Runs are ordered by their ``batch_size`` from ``config.json``
+(falling back to the ``bs<N>`` token in the run directory name).
 
 Examples:
     uv run python scripts/utils/plot_eval_curves.py \\
         --runs-dir runs/act_v2/v4 \\
         --run-name 20260929-113816_bs8_lr1e-04_... \\
         --run-name 20260929-162138_bs16_lr1e-04_... \\
-        --output assets/eval-curves/batch_size_eval_curves.png
+        --output assets/eval-curves/batch_size_uniform_panels.png
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+from plot_layout import FIGURE_DPI, FIGURE_HEIGHT, FIGURE_WIDTH, place_panel_row
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_RUNS_DIR = REPO_ROOT / "runs" / "act_v2"
@@ -137,7 +140,11 @@ def build_runs(*, runs_dir: Path, run_names: list[str] | None) -> list[dict[str,
 
 
 def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
-    fig, (success_ax, horizon_ax) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+    figure, axes = plt.subplots(
+        1, 2, figsize=(FIGURE_WIDTH, FIGURE_HEIGHT), sharex=True, squeeze=False
+    )
+    place_panel_row(axes=list(axes[0, :]))
+    success_ax, horizon_ax = axes[0, :]
 
     for run in runs:
         label = run_label(run_dir=run["run_dir"], config=run["config"])
@@ -148,26 +155,23 @@ def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
             steps, values = zip(*run["horizon"])
             horizon_ax.plot(steps, values, marker="o", markersize=3, linewidth=1.5, label=label)
 
-    success_ax.set_title(SUCCESS_RATE_TAG)
     success_ax.set_ylabel("success rate")
     success_ax.set_ylim(0.0, 1.0)
-    horizon_ax.set_title(HORIZON_TAG)
     horizon_ax.set_ylabel("mean horizon")
-    horizon_ax.set_xlabel("training step")
 
     for ax in (success_ax, horizon_ax):
+        ax.set_xlabel("training step")
         ax.grid(alpha=0.3)
 
     handles, labels = success_ax.get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="center left", bbox_to_anchor=(0.01, 0.5))
+        figure.legend(handles, labels, loc="center left", bbox_to_anchor=(0.005, 0.5))
 
     if title:
-        fig.suptitle(title)
-    fig.tight_layout(rect=(0.18, 0.0, 1.0, 1.0))
+        figure.suptitle(title)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output)
-    plt.close(fig)
+    figure.savefig(output, dpi=FIGURE_DPI)
+    plt.close(figure)
     print(f"wrote {output}")
 
 

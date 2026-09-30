@@ -28,14 +28,10 @@ import numpy as np
 from matplotlib.axes import Axes
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
+from plot_layout import FIGURE_DPI, FIGURE_HEIGHT, FIGURE_WIDTH, place_panel_row
+
 SMOOTHING_WINDOW = 500
 SMOOTHED_STRIDE = 50
-FIGURE_WIDTH = 12.0
-FIGURE_HEIGHT = 3.2
-PANEL_WIDTH = 2.85
-PANEL_HEIGHT = 2.15
-PANEL_GAP = 0.9
-PANEL_BOTTOM = 0.65
 PANEL_Y_LIMITS = {"eval/success_rate": (0.0, 1.0)}
 
 BATCH_METRICS = (
@@ -105,19 +101,8 @@ def render_group(
     figure, axes = plt.subplots(
         1, len(metrics), figsize=(FIGURE_WIDTH, FIGURE_HEIGHT), sharex=True, squeeze=False
     )
-    group_width = len(metrics) * PANEL_WIDTH + (len(metrics) - 1) * PANEL_GAP
-    group_left = (FIGURE_WIDTH - group_width) / 2
-    for index, (axis, (tag, label)) in enumerate(zip(axes[0, :], metrics)):
-        # A shared canvas and fixed panel size keep the panels equally sized on GitHub.
-        panel_left = group_left + index * (PANEL_WIDTH + PANEL_GAP)
-        axis.set_position(
-            (
-                panel_left / FIGURE_WIDTH,
-                PANEL_BOTTOM / FIGURE_HEIGHT,
-                PANEL_WIDTH / FIGURE_WIDTH,
-                PANEL_HEIGHT / FIGURE_HEIGHT,
-            )
-        )
+    place_panel_row(axes=list(axes[0, :]))
+    for axis, (tag, label) in zip(axes[0, :], metrics):
         steps, values = read_series(accumulator=accumulator, tag=tag)
         if smooth:
             steps, values = steps[::SMOOTHED_STRIDE], smooth_series(values=values)[::SMOOTHED_STRIDE]
@@ -125,7 +110,7 @@ def render_group(
         style_axis(axis=axis, label=label, tag=tag, log_scale=log_scale)
         axis.set_xlabel("Training step")
     figure.suptitle(title)
-    figure.savefig(output_path, dpi=150)
+    figure.savefig(output_path, dpi=FIGURE_DPI)
     plt.close(figure)
     print(f"wrote {output_path}")
 
