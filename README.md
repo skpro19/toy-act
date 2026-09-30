@@ -9,7 +9,7 @@ cameras (`agentview` and `robot0_eye_in_hand`). The rollouts are concatenated
 into a per-run GIF, and a combined 2x2 GIF shows all four runs side by side. Each
 panel is captioned with the run's batch size and its rollout success score.
 
-![Two-camera rollout comparison](assets/rollout-two-camera/two_camera_rollout_2x2.gif)
+<img src="assets/rollout-two-camera/two_camera_rollout_2x2.gif" width="720" alt="Two-camera rollout comparison">
 
 | Batch | Best checkpoint | Training eval | Rollout (10 ep) |
 |-------|-----------------|---------------|-----------------|
@@ -28,14 +28,6 @@ panel is captioned with the run's batch size and its rollout success score.
   checkpoints and scores.
 - `assets/rollout-two-camera/_recordings/` — raw per-run mp4s and metadata, kept
   so the GIFs can be rebuilt without re-running the rollouts.
-
-### Per-run GIFs
-
-| bs8 | bs16 |
-|-----|------|
-| ![bs8](assets/rollout-two-camera/bs8_two_camera_rollout.gif) | ![bs16](assets/rollout-two-camera/bs16_two_camera_rollout.gif) |
-| **bs32** | **bs64** |
-| ![bs32](assets/rollout-two-camera/bs32_two_camera_rollout.gif) | ![bs64](assets/rollout-two-camera/bs64_two_camera_rollout.gif) |
 
 ### Scripts (`scripts/utils/`)
 
