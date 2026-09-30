@@ -96,14 +96,14 @@ def render_group(
     smooth: bool,
     log_scale: bool,
 ) -> None:
-    figure, axes = plt.subplots(len(metrics), 1, figsize=(9, 2.4 * len(metrics)), sharex=True, squeeze=False)
-    for axis, (tag, label) in zip(axes[:, 0], metrics):
+    figure, axes = plt.subplots(1, len(metrics), figsize=(4.0 * len(metrics), 3.2), sharex=True, squeeze=False)
+    for axis, (tag, label) in zip(axes[0, :], metrics):
         steps, values = read_series(accumulator=accumulator, tag=tag)
         if smooth:
             steps, values = steps[::SMOOTHED_STRIDE], smooth_series(values=values)[::SMOOTHED_STRIDE]
         axis.plot(steps, values, linewidth=1.5, color="tab:blue")
         style_axis(axis=axis, label=label, tag=tag, log_scale=log_scale)
-    axes[-1, 0].set_xlabel("Training step")
+        axis.set_xlabel("Training step")
     figure.suptitle(title)
     figure.tight_layout()
     figure.savefig(output_path, dpi=150)
