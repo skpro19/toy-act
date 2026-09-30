@@ -16,15 +16,15 @@ Evaluation episode horizon and success rate:
 
 Batch metrics (action, weighted KL, and total losses, log scale):
 
-<img src="assets/training-run/batch_metrics_horizontal.png" alt="Smoothed action, weighted KL, and total losses over training steps (log scale)">
+<img src="assets/training-run/batch_metrics_log_scale_horizontal.png" alt="Smoothed action, weighted KL, and total losses over training steps (log scale)">
 
 Denormalized joint and gripper action errors (log scale):
 
-<img src="assets/training-run/denorm_l1_horizontal.png" alt="Smoothed denormalized joint and gripper L1 errors over training steps (log scale)">
+<img src="assets/training-run/denorm_l1_log_scale_horizontal.png" alt="Smoothed denormalized joint and gripper L1 errors over training steps (log scale)">
 
 Latent statistics (log scale):
 
-<img src="assets/training-run/latent_log_scale.png" alt="Latent mu norm and sigma mean over training steps (log scale)">
+<img src="assets/training-run/latent_log_scale_horizontal.png" alt="Latent mu norm and sigma mean over training steps (log scale)">
 
 <details>
 <summary>Run details</summary>

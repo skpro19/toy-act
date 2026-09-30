@@ -3,10 +3,10 @@
 Produces one figure per metric group, with a single panel per metric, so the
 training dynamics of a run can be inspected at a glance:
 
-- ``batch_metrics_horizontal.png``: action, weighted KL, and total losses (smoothed, log scale)
-- ``denorm_l1_horizontal.png``: denormalized joint and gripper L1 errors (smoothed, log scale)
+- ``batch_metrics_log_scale_horizontal.png``: action, weighted KL, and total losses (smoothed, log scale)
+- ``denorm_l1_log_scale_horizontal.png``: denormalized joint and gripper L1 errors (smoothed, log scale)
 - ``eval_horizontal.png``: episode horizon and success rate
-- ``latent_log_scale.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
+- ``latent_log_scale_horizontal.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
 
 Example:
     uv run python scripts/utils/plot_training_run.py \\
@@ -119,7 +119,7 @@ def main() -> None:
 
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "batch_metrics_horizontal.png",
+        output_path=args.output_dir / "batch_metrics_log_scale_horizontal.png",
         title="Batch metrics (500-step moving average)",
         metrics=BATCH_METRICS,
         smooth=True,
@@ -127,7 +127,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "denorm_l1_horizontal.png",
+        output_path=args.output_dir / "denorm_l1_log_scale_horizontal.png",
         title="Denormalized action error (500-step moving average)",
         metrics=DENORM_METRICS,
         smooth=True,
@@ -143,7 +143,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "latent_log_scale.png",
+        output_path=args.output_dir / "latent_log_scale_horizontal.png",
         title="Latent statistics",
         metrics=LATENT_METRICS,
         smooth=False,
