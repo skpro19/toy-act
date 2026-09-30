@@ -4,6 +4,10 @@
   <img src="assets/rollout/bs64_two_camera_rollout.gif" alt="Two-camera ACT policy rollout on the Can task">
 </p>
 
+## Dataset
+
+Training uses the robomimic **Can PH** (proficient-human) dataset.
+
 ## Training curve
 
 <table align="center">
