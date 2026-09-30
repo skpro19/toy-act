@@ -1,6 +1,6 @@
 # toy-act
 
-A bare-bones ACT policy implemented from scratch to understand CVAEs, action chunking, temporal ensembling, and attention.
+A toy ACT policy implemented from scratch to understand CVAEs, action chunking, temporal ensembling, and attention.
 
 ## Rollout
 
