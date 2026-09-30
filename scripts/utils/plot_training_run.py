@@ -3,8 +3,8 @@
 Produces one figure per metric group, with a single panel per metric, so the
 training dynamics of a run can be inspected at a glance:
 
-- ``batch_metrics_horizontal.png``: action, weighted KL, and total losses (smoothed)
-- ``denorm_l1_horizontal.png``: denormalized joint and gripper L1 errors (smoothed)
+- ``batch_metrics_horizontal.png``: action, weighted KL, and total losses (smoothed, log scale)
+- ``denorm_l1_horizontal.png``: denormalized joint and gripper L1 errors (smoothed, log scale)
 - ``eval_horizontal.png``: episode horizon and success rate
 - ``latent_log_scale.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
 
@@ -79,7 +79,7 @@ def smooth_series(*, values: np.ndarray, window: int = SMOOTHING_WINDOW) -> np.n
 
 
 def style_axis(*, axis: Axes, label: str, tag: str, log_scale: bool) -> None:
-    axis.set_ylabel(label)
+    axis.set_ylabel(f"{label} (log scale)" if log_scale else label)
     axis.grid(alpha=0.25)
     if log_scale:
         axis.set_yscale("log")
