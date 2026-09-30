@@ -10,17 +10,21 @@ Two-camera policy (batch size 64) on the Can task. The rollout uses the checkpoi
 
 ### Training run
 
-Evaluation success rate and episode horizon:
+Evaluation episode horizon and success rate:
 
-<img src="assets/training-run/evaluation.png" alt="Evaluation success rate and mean episode horizon over training steps">
+<img src="assets/training-run/eval.png" alt="Evaluation episode horizon and success rate over training steps">
 
-Action and KL losses:
+Batch metrics (action, weighted KL, and total losses):
 
-<img src="assets/training-run/training_loss.png" alt="Smoothed total, action, and weighted KL losses over training steps">
+<img src="assets/training-run/batch_metrics.png" alt="Smoothed action, weighted KL, and total losses over training steps">
 
-Joint and gripper action errors:
+Denormalized joint and gripper action errors:
 
-<img src="assets/training-run/action_error.png" alt="Smoothed denormalized joint and gripper L1 errors over training steps">
+<img src="assets/training-run/denorm_l1.png" alt="Smoothed denormalized joint and gripper L1 errors over training steps">
+
+Latent statistics:
+
+<img src="assets/training-run/latent.png" alt="Latent mu norm and sigma mean over training steps">
 
 <details>
 <summary>Run details</summary>
