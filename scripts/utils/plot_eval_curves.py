@@ -12,7 +12,7 @@ Examples:
         --runs-dir runs/act_v2/v4 \\
         --run-name 20260929-113816_bs8_lr1e-04_... \\
         --run-name 20260929-162138_bs16_lr1e-04_... \\
-        --output assets/eval-curves/batch_size_uniform_panels.png
+        --output assets/eval-curves/batch_size_eval_curves_legend_right.png
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
 
     handles, labels = success_ax.get_legend_handles_labels()
     if handles:
-        figure.legend(handles, labels, loc="center left", bbox_to_anchor=(0.005, 0.5))
+        figure.legend(handles, labels, loc="center right", bbox_to_anchor=(0.995, 0.5))
 
     if title:
         figure.suptitle(title)

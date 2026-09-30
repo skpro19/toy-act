@@ -6,7 +6,9 @@ A bare-bones ACT policy implemented from scratch to understand CVAEs, action chu
 
 Two-camera policy (batch size 64) on the Can task. The rollout uses the checkpoint at step 56,000, which reached 90% success in training-time evaluation.
 
-<img src="assets/rollout/bs64_two_camera_rollout.gif" alt="Two-camera ACT policy rollout on the Can task">
+<p align="center">
+  <img src="assets/rollout/bs64_two_camera_rollout.gif" alt="Two-camera ACT policy rollout on the Can task">
+</p>
 
 ### Training run
 
@@ -22,12 +24,16 @@ Two-camera policy (batch size 64) on the Can task. The rollout uses the checkpoi
 
 ### Batch size
 
-<img src="assets/rollout-two-camera/two_camera_rollout_grid.gif" alt="Batch-size ablation rollout comparison">
+<p align="center">
+  <img src="assets/rollout-two-camera/two_camera_rollout_grid.gif" alt="Batch-size ablation rollout comparison">
+</p>
 
-<img src="assets/eval-curves/batch_size_uniform_panels.png" alt="Batch-size ablation eval curves">
+<img src="assets/eval-curves/batch_size_eval_curves_legend_right.png" alt="Batch-size ablation eval curves">
 
 ### Number of cameras
 
-<img src="assets/rollout-camera-ablation/num_cameras_grid.gif" alt="Num-cameras ablation rollout comparison">
+<p align="center">
+  <img src="assets/rollout-camera-ablation/num_cameras_grid.gif" alt="Num-cameras ablation rollout comparison">
+</p>
 
-<img src="assets/eval-curves/num_cameras_uniform_panels.png" alt="Num-cameras ablation eval curves">
+<img src="assets/eval-curves/num_cameras_eval_curves_legend_right.png" alt="Num-cameras ablation eval curves">
