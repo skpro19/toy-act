@@ -3,10 +3,10 @@
 Produces one figure per metric group, with a single panel per metric, so the
 training dynamics of a run can be inspected at a glance:
 
-- ``batch_metrics_log_scale_horizontal.png``: action, weighted KL, and total losses (smoothed, log scale)
-- ``denorm_l1_log_scale_horizontal.png``: denormalized joint and gripper L1 errors (smoothed, log scale)
-- ``eval_horizontal.png``: episode horizon and success rate
-- ``latent_log_scale_horizontal.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
+- ``batch_metrics_log_scale_uniform_panels.png``: action, weighted KL, and total losses (smoothed, log scale)
+- ``denorm_l1_log_scale_uniform_panels.png``: denormalized joint and gripper L1 errors (smoothed, log scale)
+- ``eval_uniform_panels.png``: episode horizon and success rate
+- ``latent_log_scale_uniform_panels.png``: latent ``mu`` norm and ``sigma`` mean (log scale)
 
 Example:
     uv run python scripts/utils/plot_training_run.py \\
@@ -30,6 +30,12 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 SMOOTHING_WINDOW = 500
 SMOOTHED_STRIDE = 50
+FIGURE_WIDTH = 12.0
+FIGURE_HEIGHT = 3.2
+PANEL_WIDTH = 2.85
+PANEL_HEIGHT = 2.15
+PANEL_GAP = 0.9
+PANEL_BOTTOM = 0.65
 PANEL_Y_LIMITS = {"eval/success_rate": (0.0, 1.0)}
 
 BATCH_METRICS = (
@@ -96,8 +102,22 @@ def render_group(
     smooth: bool,
     log_scale: bool,
 ) -> None:
-    figure, axes = plt.subplots(1, len(metrics), figsize=(4.0 * len(metrics), 3.2), sharex=True, squeeze=False)
-    for axis, (tag, label) in zip(axes[0, :], metrics):
+    figure, axes = plt.subplots(
+        1, len(metrics), figsize=(FIGURE_WIDTH, FIGURE_HEIGHT), sharex=True, squeeze=False
+    )
+    group_width = len(metrics) * PANEL_WIDTH + (len(metrics) - 1) * PANEL_GAP
+    group_left = (FIGURE_WIDTH - group_width) / 2
+    for index, (axis, (tag, label)) in enumerate(zip(axes[0, :], metrics)):
+        # A shared canvas and fixed panel size keep the panels equally sized on GitHub.
+        panel_left = group_left + index * (PANEL_WIDTH + PANEL_GAP)
+        axis.set_position(
+            (
+                panel_left / FIGURE_WIDTH,
+                PANEL_BOTTOM / FIGURE_HEIGHT,
+                PANEL_WIDTH / FIGURE_WIDTH,
+                PANEL_HEIGHT / FIGURE_HEIGHT,
+            )
+        )
         steps, values = read_series(accumulator=accumulator, tag=tag)
         if smooth:
             steps, values = steps[::SMOOTHED_STRIDE], smooth_series(values=values)[::SMOOTHED_STRIDE]
@@ -105,7 +125,6 @@ def render_group(
         style_axis(axis=axis, label=label, tag=tag, log_scale=log_scale)
         axis.set_xlabel("Training step")
     figure.suptitle(title)
-    figure.tight_layout()
     figure.savefig(output_path, dpi=150)
     plt.close(figure)
     print(f"wrote {output_path}")
@@ -119,7 +138,7 @@ def main() -> None:
 
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "batch_metrics_log_scale_horizontal.png",
+        output_path=args.output_dir / "batch_metrics_log_scale_uniform_panels.png",
         title="Batch metrics (500-step moving average)",
         metrics=BATCH_METRICS,
         smooth=True,
@@ -127,7 +146,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "denorm_l1_log_scale_horizontal.png",
+        output_path=args.output_dir / "denorm_l1_log_scale_uniform_panels.png",
         title="Denormalized action error (500-step moving average)",
         metrics=DENORM_METRICS,
         smooth=True,
@@ -135,7 +154,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "eval_horizontal.png",
+        output_path=args.output_dir / "eval_uniform_panels.png",
         title="Evaluation during training",
         metrics=EVAL_METRICS,
         smooth=False,
@@ -143,7 +162,7 @@ def main() -> None:
     )
     render_group(
         accumulator=accumulator,
-        output_path=args.output_dir / "latent_log_scale_horizontal.png",
+        output_path=args.output_dir / "latent_log_scale_uniform_panels.png",
         title="Latent statistics",
         metrics=LATENT_METRICS,
         smooth=False,
