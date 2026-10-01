@@ -500,3 +500,39 @@ restart monitoring, or check `vastai show instances --raw` and destroy the
 labeled instance manually after verifying training state. The instance id and
 exact `INSTANCE_LABEL` are recoverable from
 `.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and `instance.json`.
+
+## Operational notes for the pi session
+
+Keep provisioning commands bounded so the pi session stays responsive. Wrap
+remote `ssh`/`scp` calls and polling loops in `timeout`, and never leave an
+unbounded foreground loop in the session; the detached watcher owns the long
+run, not the pi session.
+
+Do **not** wrap `local-wrapper-lease.sh allocate` in an outer `flock`. The
+script locks `/tmp/toy-act-local-wrapper.lock` internally, so an outer lock on
+the same file deadlocks the inner `flock` forever. Call it directly:
+
+```bash
+LEASE=$(timeout 30 .pi/prompts/scripts/vast-train/local-wrapper-lease.sh \
+  allocate "toy-act-$INSTANCE_ID")
+```
+
+Parse `vastai show instances --raw` with `jq`, not by splitting a
+pipe-joined string on whitespace. Several fields (notably `status_msg`, e.g.
+`success, status_msg=running`) contain spaces, so a `read` on a `|`-joined
+record silently misaligns fields and the poll never sees `running`. Emit one
+field at a time instead:
+
+```bash
+instance_field() {
+  local id="$1" field="$2"
+  vastai show instances --raw \
+    | jq -r --argjson id "$id" --arg field "$field" \
+        '.[] | select(.id==$id) | .[$field] // "null"'
+}
+
+for _ in $(seq 1 60); do
+  [ "$(instance_field "$INSTANCE_ID" actual_status)" = running ] && break
+  sleep 10
+done
+```

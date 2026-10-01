@@ -8,7 +8,10 @@ Examples:
     uv run python scripts/replay.py --on-screen
 
     # reproducible random selection
-    uv run python scripts/replay.py --video replays/can_ph.mp4 --n 3 --seed 0
+    uv run python scripts/replay.py --on-screen --n 3 --seed 0
+
+    # slow the on-screen playback down (20 Hz is real-time; 8 fps is 2.5x slow motion)
+    uv run python scripts/replay.py --on-screen --n 5 --fps 8
 
     # open-loop action playback (checks actions reproduce the recorded states)
     uv run python scripts/replay.py --video replays/can_ph_actions.mp4 --n 2 --use-actions
@@ -21,6 +24,7 @@ import argparse
 import importlib.util
 import os
 import random
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,6 +50,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-actions", action="store_true", help="open-loop action playback instead of loading sim states")
     parser.add_argument("--first", action="store_true", help="only replay the first frame of each episode")
     parser.add_argument("--video-skip", type=int, default=5, help="render every Nth frame to video")
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help=(
+            "pace on-screen playback to this frame rate; MuJoCo control runs at 20 Hz, "
+            "so --fps 20 is real-time and --fps 8 is 2.5x slow motion (default: uncapped)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -62,6 +75,52 @@ def load_playback_module():
     return module
 
 
+def install_frame_pacing(*, playback, fps: float | None) -> None:
+    """Pace on-screen playback to a target frame rate.
+
+    robomimic's playback loop renders as fast as the viewer allows and exposes no
+    timing control, so we wrap ``playback_trajectory_with_env`` and pace inside a
+    patched ``env.render``, which the loop calls once per frame.
+
+    The sleep subtracts the time already spent rendering, so the achieved rate tracks
+    @fps rather than falling below it by the per-frame render cost.
+    """
+    if fps is None:
+        return
+    if fps <= 0.0:
+        raise ValueError(f"fps must be > 0, got {fps}")
+
+    frame_interval = 1.0 / fps
+    original = playback.playback_trajectory_with_env
+
+    def playback_trajectory_with_pacing(*args, **kwargs):
+        env = kwargs.get("env")
+        if not kwargs.get("render", False) or env is None:
+            return original(*args, **kwargs)
+
+        original_render = env.render
+        # Seed at the first frame so the initial render is not charged a full interval.
+        last_frame_started = time.monotonic()
+
+        def paced_render(*render_args, **render_kwargs):
+            nonlocal last_frame_started
+            result = original_render(*render_args, **render_kwargs)
+            deadline = last_frame_started + frame_interval
+            remaining = deadline - time.monotonic()
+            if remaining > 0.0:
+                time.sleep(remaining)
+            last_frame_started = max(deadline, time.monotonic())
+            return result
+
+        env.render = paced_render
+        try:
+            return original(*args, **kwargs)
+        finally:
+            env.render = original_render
+
+    playback.playback_trajectory_with_env = playback_trajectory_with_pacing
+
+
 def main() -> None:
     args = parse_args()
     configure_renderer(on_screen=args.on_screen)
@@ -75,6 +134,7 @@ def main() -> None:
         args.video.parent.mkdir(parents=True, exist_ok=True)
 
     playback = load_playback_module()
+    install_frame_pacing(playback=playback, fps=args.fps)
     playback.playback_dataset(
         argparse.Namespace(
             dataset=str(args.dataset),

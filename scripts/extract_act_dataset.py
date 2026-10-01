@@ -13,6 +13,11 @@ Examples:
     # agentview plus the wrist camera
     uv run python scripts/extract_act_dataset.py --cameras agentview robot0_eye_in_hand
 
+    # only the demos tagged "better" in the multi-human dataset
+    uv run python scripts/extract_act_dataset.py \\
+        --input datasets/can/mh/low_dim_v15.hdf5 \\
+        --filter-key better \\
+        --cameras agentview
     # custom paths and resolution
     uv run python scripts/extract_act_dataset.py \\
         --input datasets/can/ph/low_dim_v15.hdf5 \\
@@ -41,7 +46,6 @@ EXTRACTION_SCRIPT = (
     REPO_ROOT / "third_party" / "robomimic" / "robomimic" / "scripts" / "dataset_states_to_obs.py"
 )
 DEFAULT_INPUT = REPO_ROOT / "datasets" / "can" / "ph" / "low_dim_v15.hdf5"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "datasets" / "can" / "ph"
 DEFAULT_CAMERAS = ("agentview",)
 
 PROPRIO_KEYS = (
@@ -54,10 +58,16 @@ def obs_keys(*, cameras: list[str] | tuple[str, ...]) -> tuple[str, ...]:
     return tuple(f"{camera}_image" for camera in cameras) + PROPRIO_KEYS
 
 
-def default_output_path(*, cameras: list[str] | tuple[str, ...]) -> Path:
+def default_output_path(
+    *, input_path: Path, cameras: list[str] | tuple[str, ...], filter_key: str | None
+) -> Path:
+    """Name the output after the input dataset's folder, keeping the same convention."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    camera_list = "_".join(cameras)
-    return DEFAULT_OUTPUT_DIR / f"{timestamp}_{camera_list}.hdf5"
+    parts = [timestamp]
+    if filter_key is not None:
+        parts.append(filter_key)
+    parts.append("_".join(cameras))
+    return input_path.parent / f"{'_'.join(parts)}.hdf5"
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +107,15 @@ def parse_args() -> argparse.Namespace:
         help="rendered image width",
     )
     parser.add_argument(
+        "--filter-key",
+        type=str,
+        default=None,
+        help=(
+            "use only the demos listed under mask/<filter-key> in the input hdf5 "
+            "(e.g. better, okay, worse, better_okay); defaults to all demos"
+        ),
+    )
+    parser.add_argument(
         "--n",
         type=int,
         default=None,
@@ -125,6 +144,37 @@ def sorted_demo_names(*, dataset: h5py.File) -> list[str]:
     demos = list(dataset["data"].keys())
     demo_indices = np.argsort([int(name[5:]) for name in demos])
     return [demos[index] for index in demo_indices]
+
+
+def filtered_demo_names(*, dataset: h5py.File, filter_key: str) -> list[str]:
+    """Return the demos referenced by ``mask/<filter_key>``, in sorted order."""
+    mask_path = f"mask/{filter_key}"
+    if mask_path not in dataset:
+        available = sorted(dataset["mask"].keys()) if "mask" in dataset else []
+        raise KeyError(
+            f"filter key {mask_path!r} not found in dataset (available: {available})"
+        )
+    tagged = {name.decode("utf-8") for name in dataset[mask_path][:]}
+    return [name for name in sorted_demo_names(dataset=dataset) if name in tagged]
+
+
+def copy_filter_keys(
+    *,
+    source_file: h5py.File,
+    output_file: h5py.File,
+    demo_names: set[str],
+) -> None:
+    """Copy the source ``mask`` group, keeping only filter keys whose demos all survived.
+
+    A filter key that references a demo dropped during extraction (for example when
+    ``--filter-key`` selected a subset) would point at missing groups, so it is skipped.
+    """
+    output_mask = output_file.create_group("mask")
+    for key in source_file["mask"]:
+        tagged = [name.decode("utf-8") for name in source_file[f"mask/{key}"][:]]
+        if set(tagged) - demo_names:
+            continue
+        output_mask.create_dataset(key, data=np.array(sorted(tagged), dtype="S"))
 
 
 def create_dataset(
@@ -196,6 +246,7 @@ def extract_act_dataset(
     cameras: list[str],
     camera_height: int,
     camera_width: int,
+    filter_key: str | None,
     num_demos: int | None,
     compress: bool,
 ) -> None:
@@ -219,7 +270,10 @@ def extract_act_dataset(
     total_samples = 0
     with h5py.File(input_path, "r") as source_file, h5py.File(output_path, "w") as output_file:
         data_group = output_file.create_group("data")
-        demo_names = sorted_demo_names(dataset=source_file)
+        if filter_key is None:
+            demo_names = sorted_demo_names(dataset=source_file)
+        else:
+            demo_names = filtered_demo_names(dataset=source_file, filter_key=filter_key)
         if num_demos is not None:
             demo_names = demo_names[:num_demos]
 
@@ -253,7 +307,13 @@ def extract_act_dataset(
             )
 
         if "mask" in source_file:
-            source_file.copy("mask", output_file)
+            # every demo in this file is already restricted to @filter_key, so only the
+            # filter keys that stay valid are carried over
+            copy_filter_keys(
+                source_file=source_file,
+                output_file=output_file,
+                demo_names=set(demo_names),
+            )
 
         data_group.attrs["total"] = total_samples
         data_group.attrs["env_args"] = json.dumps(env.serialize(), indent=4)
@@ -264,13 +324,16 @@ def extract_act_dataset(
 def main() -> None:
     args = parse_args()
     configure_renderer()
-    output_path = args.output or default_output_path(cameras=args.cameras)
+    output_path = args.output or default_output_path(
+        input_path=args.input, cameras=args.cameras, filter_key=args.filter_key
+    )
     extract_act_dataset(
         input_path=args.input,
         output_path=output_path,
         cameras=args.cameras,
         camera_height=args.camera_height,
         camera_width=args.camera_width,
+        filter_key=args.filter_key,
         num_demos=args.n,
         compress=args.compress,
     )
