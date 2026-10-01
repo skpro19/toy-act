@@ -26,7 +26,12 @@ replays/
 rollouts/
 
 .vast-train-local/
-.pi/
+
+.pi/*
+!.pi/prompts/
+!.pi/extensions/
+.pi/extensions/*
+!.pi/extensions/question.ts
 
 ISSUES.md
 debug/

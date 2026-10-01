@@ -1,0 +1,125 @@
+#!/bin/bash
+set -o pipefail
+
+readonly CONTROL_DIR=/workspace/toy-act/.vast-train
+readonly PROJECT_DIR=/workspace/toy-act
+readonly LOG_FILE="$CONTROL_DIR/logs/training.log"
+readonly TRAIN_MODULE="${TRAIN_MODULE:-scripts.train_v1}"
+readonly TRAIN_CONFIG="${TRAIN_CONFIG:-}"
+
+write_marker() {
+  local path="$1"
+  local value="$2"
+  printf '%s\n' "$value" > "${path}.tmp"
+  mv "${path}.tmp" "$path"
+}
+
+terminal_marker_written=false
+runner_pid=""
+
+capture_failure_resources() {
+  local exit_code="$1"
+  local path
+  {
+    printf 'timestamp=%s exit_code=%s\n' "$(date -Iseconds)" "$exit_code"
+    df -h /dev/shm
+    free -b
+    for path in \
+      /sys/fs/cgroup/memory.events \
+      /sys/fs/cgroup/memory.current \
+      /sys/fs/cgroup/memory.peak \
+      /sys/fs/cgroup/memory.max \
+      /sys/fs/cgroup/memory/memory.failcnt \
+      /sys/fs/cgroup/memory/memory.max_usage_in_bytes \
+      /sys/fs/cgroup/memory/memory.oom_control \
+      /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+      if [ -r "$path" ]; then
+        printf '%s: ' "$path"
+        tr '\n' ' ' < "$path"
+        printf '\n'
+      fi
+    done
+  } > "${CONTROL_DIR}/logs/failure-resources.txt" 2>&1
+}
+
+mark_failed() {
+  local exit_code="${1:-1}"
+  if [ -f "${CONTROL_DIR}/state/completed" ]; then
+    terminal_marker_written=true
+    return
+  fi
+  if [ "$terminal_marker_written" != true ]; then
+    capture_failure_resources "$exit_code"
+    write_marker "${CONTROL_DIR}/state/failed" "failed ${exit_code}"
+    terminal_marker_written=true
+  fi
+}
+
+stop_runner() {
+  local exit_code="$1"
+  if [ -n "$runner_pid" ]; then
+    kill -TERM -- "-$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+  fi
+  mark_failed "$exit_code"
+  exit "$exit_code"
+}
+
+on_exit() {
+  local exit_code=$?
+  if [ "$terminal_marker_written" != true ]; then
+    test "$exit_code" -ne 0 || exit_code=1
+    mark_failed "$exit_code"
+  fi
+}
+
+trap on_exit EXIT
+trap 'stop_runner 129' HUP
+trap 'stop_runner 130' INT
+trap 'stop_runner 143' TERM
+
+test -d "${CONTROL_DIR}/logs" || { echo "ERROR: missing log directory" >&2; exit 1; }
+test -d "${CONTROL_DIR}/state" || { echo "ERROR: missing state directory" >&2; exit 1; }
+test ! -e "${CONTROL_DIR}/state/completed" || { echo "ERROR: completed marker already exists" >&2; exit 1; }
+test ! -e "${CONTROL_DIR}/state/failed" || { echo "ERROR: failed marker already exists" >&2; exit 1; }
+test ! -e "${CONTROL_DIR}/state/run-status" || { echo "ERROR: run-status marker already exists" >&2; exit 1; }
+
+cd "$PROJECT_DIR" || exit 1
+touch "$LOG_FILE" || exit 1
+
+setsid bash -c '
+  set -o pipefail
+  train_args=()
+  test -n "${TRAIN_CONFIG:-}" && train_args+=(--config "$TRAIN_CONFIG")
+  test -n "${TRAIN_DATASET:-}" && train_args+=(--dataset "$TRAIN_DATASET")
+  test -n "${TRAIN_RESUME:-}" && train_args+=(--resume)
+  test -n "${TRAIN_OLD_RUN_NAME:-}" && train_args+=(--old-run-name "$TRAIN_OLD_RUN_NAME")
+  test -n "${TRAIN_EPOCHS:-}" && train_args+=(--epochs "$TRAIN_EPOCHS")
+  /root/.local/bin/uv run --frozen --only-group train \
+    python -m "$TRAIN_MODULE" "${train_args[@]}" 2>&1 | tee -a "$1"
+' bash "$LOG_FILE" &
+runner_pid=$!
+write_marker "${CONTROL_DIR}/state/runner-pid" "$runner_pid"
+
+# Do not publish readiness until the process group survives initialization.
+sleep 2
+if ! kill -0 "$runner_pid" 2>/dev/null; then
+  wait "$runner_pid"
+  exit_code=$?
+  test "$exit_code" -ne 0 || exit_code=1
+  mark_failed "$exit_code"
+  exit "$exit_code"
+fi
+write_marker "${CONTROL_DIR}/state/run-status" "running"
+
+wait "$runner_pid"
+exit_code=$?
+
+if [ "$exit_code" -eq 0 ]; then
+  write_marker "${CONTROL_DIR}/state/completed" "succeeded 0"
+  terminal_marker_written=true
+else
+  mark_failed "$exit_code"
+fi
+
+exit "$exit_code"
