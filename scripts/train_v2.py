@@ -51,9 +51,6 @@ from scripts.train_v1 import (
 
 RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
-DEFAULT_DATASET = Path(
-    "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5"
-)
 SENSITIVITY_PROBE_SIZE = 16
 CONFIG_VERSION = "v4"
 EVAL_EPISODES = 30
@@ -67,6 +64,7 @@ CONFIG_KEYS = (
     "batch_size",
     "steps",
     "image_keys",
+    "dataset",
     "lr",
     "seed",
     "beta",
@@ -116,6 +114,7 @@ RUN_NAME_OMIT_KEYS = frozenset({
     "seed",
     "checkpoint_every",
     "beta_start",
+    "dataset",
     "tensorboard",
     "version",
 })
@@ -135,6 +134,10 @@ def validate_config(*, config: dict) -> dict:
     config.setdefault("beta_start", 0.0)
     config.setdefault("beta_warmup_steps", 0)
     config.setdefault("use_z", True)
+
+    dataset = config["dataset"]
+    if not isinstance(dataset, str) or not dataset:
+        raise ValueError("dataset must be a non-empty string")
 
     if config["steps"] <= 0:
         raise ValueError(f"steps must be > 0, got {config['steps']}")
@@ -197,6 +200,12 @@ def load_config(*, path: Path) -> dict:
         config = tomllib.load(file)
 
     return validate_config(config=config)
+
+
+def resolve_dataset(*, cli_dataset: Path | None, config: dict) -> Path:
+    if cli_dataset is not None:
+        return cli_dataset
+    return Path(config["dataset"])
 
 
 def make_action_loss_fn(*, action_loss: str) -> nn.Module:
@@ -874,8 +883,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=DEFAULT_DATASET,
-        help="path to the CAN PH HDF5 training dataset",
+        default=None,
+        help=(
+            "path to the CAN PH HDF5 training dataset; overrides the config's "
+            "required 'dataset' key"
+        ),
     )
     parser.add_argument(
         "--steps",
@@ -897,7 +909,8 @@ def main() -> None:
     if args.steps is not None:
         config["steps"] = args.steps
 
-    train(config=config, dataset=args.dataset)
+    dataset = resolve_dataset(cli_dataset=args.dataset, config=config)
+    train(config=config, dataset=dataset)
 
 
 if __name__ == "__main__":

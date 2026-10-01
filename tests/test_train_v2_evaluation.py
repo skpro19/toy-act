@@ -83,5 +83,64 @@ class CheckpointEvaluationTest(unittest.TestCase):
             self.assertEqual(events.Scalars("timing/checkpoint_seconds")[0].step, 2000)
 
 
+class DatasetResolutionTest(unittest.TestCase):
+    def base_config(self) -> dict:
+        return {
+            "version": "v4",
+            "action_loss": "l1",
+            "batch_size": 8,
+            "steps": 100000,
+            "image_keys": ["agentview_image", "robot0_eye_in_hand_image"],
+            "dataset": "datasets/can/ph_mh_better/example.hdf5",
+            "lr": 1e-4,
+            "seed": 0,
+            "beta": 0.01,
+            "checkpoint_every": 2000,
+            "tensorboard": {},
+        }
+
+    def test_resolve_dataset_prefers_cli_then_config(self) -> None:
+        cli_dataset = Path("custom.hdf5")
+        config = {"dataset": "datasets/config.hdf5"}
+
+        self.assertEqual(
+            train_v2.resolve_dataset(cli_dataset=cli_dataset, config=config), cli_dataset)
+        self.assertEqual(
+            train_v2.resolve_dataset(cli_dataset=None, config=config),
+            Path("datasets/config.hdf5"),
+        )
+
+    def test_validate_config_requires_dataset(self) -> None:
+        config = self.base_config()
+        del config["dataset"]
+
+        with self.assertRaises(KeyError):
+            train_v2.validate_config(config=config)
+
+    def test_validate_config_accepts_dataset(self) -> None:
+        validated = train_v2.validate_config(config=self.base_config())
+
+        self.assertEqual(validated["dataset"], "datasets/can/ph_mh_better/example.hdf5")
+
+    def test_validate_config_rejects_empty_or_non_string_dataset(self) -> None:
+        for bad_dataset in ("", 123):
+            with self.subTest(dataset=bad_dataset):
+                config = self.base_config()
+                config["dataset"] = bad_dataset
+                with self.assertRaises(ValueError):
+                    train_v2.validate_config(config=config)
+
+    def test_dataset_is_excluded_from_run_name(self) -> None:
+        config_without_dataset = self.base_config()
+        del config_without_dataset["dataset"]
+        config_with_dataset = self.base_config()
+
+        run_name = train_v2.make_run_name(config=config_without_dataset)
+        run_name_with_dataset = train_v2.make_run_name(config=config_with_dataset)
+
+        self.assertEqual(run_name.split("_", 1)[1], run_name_with_dataset.split("_", 1)[1])
+        self.assertNotIn("dataset", run_name_with_dataset)
+
+
 if __name__ == "__main__":
     unittest.main()

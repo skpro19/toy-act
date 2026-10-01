@@ -9,6 +9,7 @@ beta_start = 0.001
 beta_warmup_steps = 0
 checkpoint_every = 2000
 use_z = false
+dataset = "datasets/can/ph_mh_better/2026-10-01_ph_mh_better_agentview_robot0_eye_in_hand_trimmed.hdf5"
 image_keys = ["agentview_image"]
 
 [tensorboard]

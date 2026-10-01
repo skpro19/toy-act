@@ -30,8 +30,8 @@ including cleanup.
 | S3 destination | `s3://toy-act/checkpoints/act_v2/` |
 | Git remote | `https://github.com/skpro19/toy-act.git` |
 | Git branch | `act-v2` |
-| Dataset | `datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
-| Dataset S3 source | `s3://toy-act/datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5` |
+| Dataset | resolved from the selected config's `dataset` key into `DATASET_PATH` |
+| Dataset S3 source | `s3://toy-act/` + `DATASET_PATH` |
 | Remote project | `/workspace/toy-act` |
 | Remote control dir | `/workspace/toy-act/.vast-train` |
 | Remote TensorBoard | `127.0.0.1:6006` on the instance |
@@ -63,8 +63,10 @@ defaulting to `configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinh
 Record the selected path as `CONFIG_PATH`, verify it exists and is git-tracked
 (`git ls-files --error-unmatch "$CONFIG_PATH"`), and load it with
 `scripts.train_v2.load_config` to validate its v4 schema. Read its
-`checkpoint_every`, `steps`, and ordered `image_keys` into `CHECKPOINT_EVERY`,
-`STEPS`, and `IMAGE_KEYS` for the later verification step. Validate that the
+`checkpoint_every`, `steps`, ordered `image_keys`, and the required `dataset`
+into `CHECKPOINT_EVERY`, `STEPS`, `IMAGE_KEYS`, and `DATASET_PATH`. Derive
+`DATASET_S3_URI="s3://toy-act/$DATASET_PATH"` for the step-13 upload and
+download. Validate that the
 selected config's cameras are supported by `scripts/rollout.py`; confirm the
 downloaded dataset contains every requested `image_key` before launching.
 The selected config is part of the git clone on the instance, so no extra
@@ -78,7 +80,7 @@ gitignored, so it is never committed. It holds:
 
 | File | Contents |
 |---|---|
-| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, S3 checkpoint URI, and watcher pid/script/log/report paths |
+| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, dataset path, S3 checkpoint URI, and watcher pid/script/log/report paths |
 | `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
 | `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
 | `watcher.sh` | Copy of the committed `local-watcher.sh` template that was launched |
@@ -337,18 +339,19 @@ thresholds without asking the user.
     `/workspace/toy-act/.vast-train` first), chmod it 600 remotely, and delete
     the local temporary file. Never transfer `VAST_API_KEY` or print AWS
     credentials.
-13. Ensure the selected two-camera dataset is in the bucket, then fetch it on
-    the instance:
-    - if the dataset exists locally, upload it to its S3 source with the workload
-      profile, skipping upload when the object already exists with the same size.
-      The multi-gigabyte multipart upload can hit transient endpoint errors, so
-      set `AWS_MAX_ATTEMPTS=10 AWS_RETRY_MODE=adaptive` and retry up to three
-      times; if it is not local, require that the S3 object already exists;
+13. Ensure the selected dataset (`DATASET_PATH`, S3 `DATASET_S3_URI`) is in
+    the bucket, then fetch it on the instance:
+    - if the dataset exists locally, upload it to `DATASET_S3_URI` with the
+      workload profile, skipping upload when the object already exists with the
+      same size. The multi-gigabyte multipart upload can hit transient endpoint
+      errors, so set `AWS_MAX_ATTEMPTS=10 AWS_RETRY_MODE=adaptive` and retry up
+      to three times; if it is not local, require that the S3 object already
+      exists;
     - the workload profile can `PutObject` under `datasets/` but is **not**
       authorized to `DeleteObject` there, so never attempt to remove dataset
       objects with it;
-    - on the instance, download it from that key to the same project-relative
-      path using the transferred credentials and installed `awscli`;
+    - on the instance, download it from `DATASET_S3_URI` to `DATASET_PATH` using
+      the transferred credentials and installed `awscli`;
     - verify the remote SHA-256 matches the local file when present; otherwise
       verify its byte size against S3 `head-object` and open it with `h5py` to
       check the requested camera keys before launching.
@@ -393,11 +396,12 @@ thresholds without asking the user.
     tmux new-session -d -s train \
       -e TRAIN_MODULE=scripts.train_v2 \
       -e TRAIN_CONFIG="$CONFIG_PATH" \
-      -e TRAIN_DATASET="datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand.hdf5" \
       'bash /workspace/toy-act/.opencode/commands/scripts/vast-train/runner.sh'
     ```
 
-    Poll for up to 30 seconds until
+    The dataset path is read from `CONFIG_PATH` on the instance, so `TRAIN_DATASET`
+    is not passed here; `runner.sh` still forwards it when set to override the
+    config. Poll for up to 30 seconds until
     `/workspace/toy-act/.vast-train/state/run-status` reads `running`; require
     the `train` session to survive an additional five-second window. A missing
     tmux session is never a success signal; the persisted state files are
