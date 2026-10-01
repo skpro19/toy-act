@@ -32,6 +32,9 @@ rollouts/
 !.pi/extensions/
 .pi/extensions/*
 !.pi/extensions/question.ts
+!.pi/skills/
+.pi/skills/*
+!.pi/skills/port-to-pi/
 
 ISSUES.md
 debug/
