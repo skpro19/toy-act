@@ -37,5 +37,6 @@ rollouts/
 !.pi/skills/port-to-pi/
 
 ISSUES.md
+ABLATIONS.md
 debug/
 opencode.json
