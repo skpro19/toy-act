@@ -1,6 +1,6 @@
 ---
 description: Train ACT v2 (CVAE) on a temporary Vast.ai RTX 4090 with S3 checkpoints
-argument-hint: "[config-path]"
+argument-hint: "<config-path>"
 ---
 
 Run `scripts/train_v2.py` with a v4 config on a newly provisioned Vast.ai instance
@@ -61,9 +61,8 @@ Determine `CONFIG_PATH`, the local path to the training config:
 - If `CONFIG_PATH` is already set by the invoking workflow (for example
   `ablate`), use it directly.
 - Otherwise, if the command argument `${1:-}` is non-empty, use it.
-- Otherwise ask the user with the `question` tool, listing the up-to-5
-  most-recently-modified `configs/train/act_v2/*/*.toml` files (newest first),
-  excluding `BASE.toml` and `legacy/`, and defaulting to the first listed path.
+- Otherwise stop and ask the user for an explicit config path. Do not guess or
+  fall back to a default.
 
 The config does **not** need to be git-tracked or committed. Resolve it to a
 self-contained TOML and record the compact run slug:
