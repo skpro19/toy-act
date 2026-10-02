@@ -44,11 +44,11 @@ Construct the instance label once per invocation, before provisioning, by
 appending a date-time stamp to the fixed prefix:
 
 ```bash
-RUN_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 INSTANCE_LABEL="toy-act-train-actv2-${RUN_TIMESTAMP}"
 ```
 
-`RUN_TIMESTAMP` uses the same `YYYYMMDD-HHMMSS` form as `make_run_name`, so the
+`RUN_TIMESTAMP` uses the same `YYYY-MM-DD_HH-MM-SS` form as `make_run_name`, so the
 label stays recognizable while remaining unique across repeated or concurrent
 invocations. Do not regenerate `RUN_TIMESTAMP` later in the workflow. Record
 `INSTANCE_LABEL` in `setup.env` so the exact label stays recoverable for

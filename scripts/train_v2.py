@@ -105,9 +105,9 @@ RUN_NAME_FIELDS = (
     ("beta", "beta", "{:g}"),
     ("beta_warmup_steps", "wu", "{:d}"),
     ("steps", "st", "{:d}"),
-    ("image_keys", "img", "{:s}"),
+    ("image_keys", "img_", "{:s}"),
     ("use_z", "z", "{:d}"),
-    ("dataset", "ds", "{:s}"),
+    ("dataset", "ds_", "{:s}"),
     ("seed", "s", "{:d}"),
     ("action_loss", "", "{:s}"),
 )
@@ -340,8 +340,8 @@ def make_run_slug(*, config: dict) -> str:
 
 def make_run_name(*, config: dict) -> str:
     slug = config.get("name") or make_run_slug(config=config)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{slug}_{timestamp}"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{timestamp}_{slug}"
 
 
 def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], list]:

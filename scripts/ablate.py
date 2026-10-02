@@ -1,15 +1,14 @@
-"""Generate ablation config deltas from a grid spec.
+"""Generate ablation configs from a grid spec.
 
-Each ablation group lives in a folder with a ``BASE.toml`` and small delta
-files that extend it through ``base_config`` + ``overrides``. This script
-reads one spec per sweep, expands the Cartesian product of the grid, and
-writes one delta per combination (or prints what it would write).
+Each ablation group lives in a folder with a ``BASE.toml``; a spec expands a
+grid of overrides against that base. Each combination's run name is the full
+compact encoding of its effective config, so the name reflects every training
+parameter used.
 
 Spec example:
 
-    description = "batch size and z sweep on ph"
+    description = "batch size and seed sweep on ph"
     group = "configs/act_v2/BS-32"
-    name_template = "bs{batch_size}_s{seed}"   # optional; defaults to make_run_slug
 
     [fixed]
     dataset = "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand_trimmed.hdf5"
@@ -20,6 +19,7 @@ Spec example:
 
 Usage:
     uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml
+    uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --resolve-dir DIR
     uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --materialize
     uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --exec --steps 10
 """
@@ -36,11 +36,10 @@ from scripts.train_v2 import (
     deep_merge,
     make_run_slug,
     read_config_file,
-    sanitize_slug,
     validate_config,
 )
 
-SPEC_KEYS = frozenset({"description", "group", "fixed", "grid", "name_template"})
+SPEC_KEYS = frozenset({"description", "group", "fixed", "grid"})
 BASE_FILENAME = "BASE.toml"
 TRAIN_COMMAND = ("uv", "run", "python", "-m", "scripts.train_v2")
 
@@ -70,10 +69,6 @@ def load_spec(*, path: Path) -> dict:
     if not isinstance(fixed, dict):
         raise ValueError(f"{path}: fixed must be a table")
 
-    name_template = spec.get("name_template")
-    if name_template is not None and not isinstance(name_template, str):
-        raise ValueError(f"{path}: name_template must be a string")
-
     return spec
 
 
@@ -83,31 +78,23 @@ def expand_grid(*, grid: dict) -> list[dict]:
     return [dict(zip(keys, values)) for values in combinations]
 
 
-def make_slug(*, combo: dict, name_template: str | None) -> str:
-    if name_template is not None:
-        return sanitize_slug(text=name_template.format(**combo))
-    return make_run_slug(config=combo)
-
-
 def build_plan(*, spec: dict, group_dir: Path, base_config: dict) -> list[dict]:
     fixed = spec.get("fixed", {})
-    name_template = spec.get("name_template")
     plan: list[dict] = []
     seen: dict[str, dict] = {}
     for combo in expand_grid(grid=spec["grid"]):
-        slug = make_slug(combo=combo, name_template=name_template)
-        if slug in seen:
-            raise ValueError(
-                f"duplicate slug {slug!r} for combos {seen[slug]} and {combo}; "
-                "add or adjust name_template"
-            )
-        seen[slug] = combo
         overrides = deep_merge(base=dict(fixed), overrides=combo)
         effective = deep_merge(base=base_config, overrides=overrides)
         try:
             validate_config(config=effective)
         except (KeyError, ValueError) as error:
-            raise ValueError(f"config for {slug!r} is invalid: {error}") from error
+            raise ValueError(f"config for {combo} is invalid: {error}") from error
+        slug = make_run_slug(config=effective)
+        if slug in seen:
+            raise ValueError(
+                f"duplicate run name {slug!r} for combos {seen[slug]} and {combo}"
+            )
+        seen[slug] = combo
         plan.append(
             {
                 "slug": slug,

@@ -1,6 +1,5 @@
 description = "bs32 noz ph seed sweep"
 group = "configs/act_v2/BS-32"
-name_template = "bs32_z0_s{seed}"
 
 [fixed]
 dataset = "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand_trimmed.hdf5"
