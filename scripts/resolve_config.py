@@ -2,7 +2,7 @@
 
 Usage:
     uv run python -m scripts.resolve_config \
-        --config configs/act_v2/BS-32/bs32_z0_s0.toml \
+        --config configs/train/act_v2/BS-32/bs32_z0_s0.toml \
         --out .vast-train-local/resolved/bs32_z0_s0.toml \
         --name bs32_z0_s0
 """

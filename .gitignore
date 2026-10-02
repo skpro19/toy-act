@@ -25,6 +25,8 @@ third_party/
 replays/
 rollouts/
 
+configs/train/act_v2/legacy/
+
 .vast-train-local/
 
 .pi/*

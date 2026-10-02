@@ -62,8 +62,8 @@ Determine `CONFIG_PATH`, the local path to the training config:
   `ablate`), use it directly.
 - Otherwise, if the command argument `${1:-}` is non-empty, use it.
 - Otherwise ask the user with the `question` tool, listing the up-to-5
-  most-recently-modified `configs/act_v2/*/*.toml` files (newest first),
-  excluding `BASE.toml`, and defaulting to the first listed path.
+  most-recently-modified `configs/train/act_v2/*/*.toml` files (newest first),
+  excluding `BASE.toml` and `legacy/`, and defaulting to the first listed path.
 
 The config does **not** need to be git-tracked or committed. Resolve it to a
 self-contained TOML and record the compact run slug:

@@ -948,7 +948,7 @@ def parse_args() -> argparse.Namespace:
         "--config",
         type=Path,
         default=Path(
-            "configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml"
+            "configs/train/act_v2/legacy/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml"
         ),
         help="path to the training hyperparameter config file",
     )

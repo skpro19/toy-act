@@ -8,7 +8,7 @@ parameter used.
 Spec example:
 
     description = "batch size and seed sweep on ph"
-    group = "configs/act_v2/BS-32"
+    group = "configs/train/act_v2/BS-32"
 
     [fixed]
     dataset = "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand_trimmed.hdf5"
@@ -18,10 +18,10 @@ Spec example:
     seed = [0, 420]
 
 Usage:
-    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml
-    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --resolve-dir DIR
-    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --materialize
-    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --exec --steps 10
+    uv run python -m scripts.ablate --spec configs/sweep/my-sweep.toml
+    uv run python -m scripts.ablate --spec configs/sweep/my-sweep.toml --resolve-dir DIR
+    uv run python -m scripts.ablate --spec configs/sweep/my-sweep.toml --materialize
+    uv run python -m scripts.ablate --spec configs/sweep/my-sweep.toml --exec --steps 10
 """
 
 import argparse
