@@ -4,6 +4,7 @@ import argparse
 import faulthandler
 import json
 import random
+import re
 import time
 import tomllib
 from datetime import datetime
@@ -126,6 +127,15 @@ CAMERA_TAGS = {
     "agentview_image": "av",
     "robot0_eye_in_hand_image": "eih",
 }
+
+DATASET_CAMERA_TAGS = {
+    "agentview": "av",
+    "robot0_eye_in_hand": "eih",
+}
+
+DATASET_TIMESTAMP_PREFIX = re.compile(
+    r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_"
+)
 
 
 def validate_config(*, config: dict) -> dict:
@@ -311,7 +321,11 @@ def format_image_keys(*, image_keys: list[str]) -> str:
 
 
 def format_dataset(*, dataset: str) -> str:
-    return Path(dataset).parent.name
+    path = Path(dataset)
+    stem = DATASET_TIMESTAMP_PREFIX.sub("", path.stem)
+    for token, tag in DATASET_CAMERA_TAGS.items():
+        stem = stem.replace(token, tag)
+    return f"{path.parent.name}_{stem}"
 
 
 def render_config_fields(*, config: dict) -> list[str]:

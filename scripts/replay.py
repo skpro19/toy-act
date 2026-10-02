@@ -18,6 +18,9 @@ Examples:
 
     # replay every episode in order on screen
     uv run python scripts/replay.py --on-screen --all
+
+    # cap each episode at 200 steps (useful for long trajectories)
+    uv run python scripts/replay.py --on-screen --n 10 --max-steps 200
 """
 
 import argparse
@@ -49,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cameras", type=str, nargs="+", default=None, help="camera name(s); defaults per mode")
     parser.add_argument("--use-actions", action="store_true", help="open-loop action playback instead of loading sim states")
     parser.add_argument("--first", action="store_true", help="only replay the first frame of each episode")
+    parser.add_argument("--max-steps", type=int, default=None, help="cap each replayed episode to this many steps")
     parser.add_argument("--video-skip", type=int, default=5, help="render every Nth frame to video")
     parser.add_argument(
         "--fps",
@@ -121,6 +125,32 @@ def install_frame_pacing(*, playback, fps: float | None) -> None:
     playback.playback_trajectory_with_env = playback_trajectory_with_pacing
 
 
+def install_step_limit(*, playback, max_steps: int | None) -> None:
+    """Cap each replayed episode to @max_steps.
+
+    robomimic's playback loop walks the full ``states`` array, so we wrap
+    ``playback_trajectory_with_env`` and truncate the episode arrays it receives.
+    Truncating ``actions`` alongside ``states`` keeps open-loop playback consistent.
+    """
+    if max_steps is None:
+        return
+    if max_steps <= 0:
+        raise ValueError(f"max_steps must be > 0, got {max_steps}")
+
+    original = playback.playback_trajectory_with_env
+
+    def playback_trajectory_with_limit(*args, **kwargs):
+        states = kwargs.get("states")
+        if states is not None:
+            kwargs["states"] = states[:max_steps]
+            actions = kwargs.get("actions")
+            if actions is not None:
+                kwargs["actions"] = actions[:max_steps]
+        return original(*args, **kwargs)
+
+    playback.playback_trajectory_with_env = playback_trajectory_with_limit
+
+
 def main() -> None:
     args = parse_args()
     configure_renderer(on_screen=args.on_screen)
@@ -135,6 +165,7 @@ def main() -> None:
 
     playback = load_playback_module()
     install_frame_pacing(playback=playback, fps=args.fps)
+    install_step_limit(playback=playback, max_steps=args.max_steps)
     playback.playback_dataset(
         argparse.Namespace(
             dataset=str(args.dataset),
