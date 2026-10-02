@@ -119,6 +119,28 @@ gitignored, so it is never committed. It holds:
 | `watcher.log` | Timestamped watcher events and training progress |
 | `report.txt` | Final outcome report written by the watcher (run name, S3 URIs, elapsed time, price, pinned commit, TensorBoard URL, S3 verification, cleanup status) |
 
+## Concurrent invocations and SSH forwarding
+
+Multiple labeled instances may run at once (for example when the `ablate`
+driver hands off one combo and immediately provisions the next). Per-run local
+resources are namespaced by the lease index, so they do not collide:
+
+- each invocation gets its own `.vast-train-local/toy-act-<INSTANCE_ID>/` run
+  dir, `known_hosts`, and detached watcher;
+- `local-wrapper-lease.sh allocate` returns a unique `INDEX`, so the local
+  TensorBoard port is `TB_PORT=$((6006 + INDEX))` and the tmux wrappers are
+  `act-ssh-$INDEX` / `act-tb-$INDEX`; the remote port `6006` is per instance;
+- the TensorBoard URL is `http://localhost:$TB_PORT/`, taken from the lease —
+  never assume `6006`; record `TB_URL=http://localhost:$TB_PORT/` in
+  `setup.env`;
+- the TB forward is one-shot (`ssh -N`). A dropped forward (local suspend,
+  network blip, or instance reconnect) does not affect training, backup, or the
+  watcher; restore it per run with `/resume-tb-forwarding` using the recorded
+  `INDEX`/`TB_PORT`/`TB_SESSION`, and do not allocate a new index;
+- only the watcher releases a lease (kills `act-ssh-$INDEX`/`act-tb-$INDEX` and
+  removes `/tmp/toy-act-local-wrapper-$INDEX.owner`). Never kill those sessions
+  for a live run.
+
 ## Workflow
 
 1. Require `vastai`, `aws`, `jq`, `ssh`, `ssh-keyscan`, `git`, `tmux`, `flock`,
@@ -524,7 +546,9 @@ thresholds without asking the user.
     URL, and the local run-state directory
     `.vast-train-local/toy-act-<INSTANCE_ID>/` (log at `watcher.log`, report at
     `report.txt`) to the user, then return without blocking on the training run.
-    Do not keep polling training progress in the pi session.
+    Do not keep polling training progress in the pi session. When invoked from
+    the `ablate` driver, the driver starts the next combo as soon as this combo
+    satisfies the run gate and has been handed off.
 
 If setup fails before remote `run-status=running`, destroy the instance through
 the watcher cleanup (or directly when no watcher was started yet) and report the
