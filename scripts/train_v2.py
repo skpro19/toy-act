@@ -106,18 +106,26 @@ RUN_NAME_FIELDS = (
     ("beta_warmup_steps", "wu", "{:d}"),
     ("steps", "st", "{:d}"),
     ("image_keys", "img", "{:s}"),
-    ("use_z", "use_z", "{:d}"),
+    ("use_z", "z", "{:d}"),
+    ("dataset", "ds", "{:s}"),
+    ("seed", "s", "{:d}"),
     ("action_loss", "", "{:s}"),
 )
 
 RUN_NAME_OMIT_KEYS = frozenset({
-    "seed",
     "checkpoint_every",
     "beta_start",
-    "dataset",
     "tensorboard",
     "version",
+    "base_config",
+    "description",
+    "name",
 })
+
+CAMERA_TAGS = {
+    "agentview_image": "av",
+    "robot0_eye_in_hand_image": "eih",
+}
 
 
 def validate_config(*, config: dict) -> dict:
@@ -192,14 +200,53 @@ def validate_tensorboard_flags(*, tensorboard: dict) -> dict:
     return flags
 
 
-def load_config(*, path: Path) -> dict:
+def deep_merge(*, base: dict, overrides: dict) -> dict:
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(base=merged[key], overrides=value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def read_config_file(*, path: Path) -> dict:
+    return _read_config_file(path=path.resolve(), visited=frozenset())
+
+
+def _read_config_file(*, path: Path, visited: frozenset[Path]) -> dict:
+    if path in visited:
+        raise ValueError(f"config inheritance cycle detected at {path}")
     if not path.is_file():
         raise FileNotFoundError(f"config file not found: {path}")
 
     with path.open("rb") as file:
-        config = tomllib.load(file)
+        raw = tomllib.load(file)
 
-    return validate_config(config=config)
+    base_config = raw.pop("base_config", None)
+    raw.pop("description", None)
+    overrides = raw.pop("overrides", None)
+    if overrides is not None and not isinstance(overrides, dict):
+        raise ValueError(f"{path}: overrides must be a table")
+
+    if base_config is None:
+        return deep_merge(base=raw, overrides=overrides or {})
+
+    if not isinstance(base_config, str) or not base_config:
+        raise ValueError(f"{path}: base_config must be a non-empty string")
+    base_path = (path.parent / base_config).resolve()
+    base = _read_config_file(path=base_path, visited=visited | {path})
+    merged = deep_merge(base=base, overrides=overrides or {})
+    return deep_merge(base=merged, overrides=raw)
+
+
+def load_config(*, path: Path) -> dict:
+    return validate_config(config=read_config_file(path=path))
+
+
+def config_uses_inheritance(*, path: Path) -> bool:
+    with path.open("rb") as file:
+        return "base_config" in tomllib.load(file)
 
 
 def resolve_dataset(*, cli_dataset: Path | None, config: dict) -> Path:
@@ -241,6 +288,13 @@ def save_run_config(
         file.write("\n")
 
 
+def sanitize_slug(*, text: str) -> str:
+    return "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in text
+    )
+
+
 def format_config_value(
     *,
     value: object,
@@ -249,27 +303,45 @@ def format_config_value(
         value = int(value)
     if isinstance(value, (list, tuple)):
         value = "-".join(str(item) for item in value)
-    rendered = template.format(value)
-    return "".join(
-        character if character.isalnum() or character in "._-" else "-"
-        for character in rendered
-    )
+    return sanitize_slug(text=template.format(value))
 
 
-def make_run_name(*, config: dict) -> str:
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    parts = [timestamp]
+def format_image_keys(*, image_keys: list[str]) -> str:
+    return "-".join(CAMERA_TAGS.get(key, key) for key in image_keys)
+
+
+def format_dataset(*, dataset: str) -> str:
+    return Path(dataset).parent.name
+
+
+def render_config_fields(*, config: dict) -> list[str]:
+    parts: list[str] = []
     handled_keys: set[str] = set(RUN_NAME_OMIT_KEYS)
     for key, label, template in RUN_NAME_FIELDS:
         if key not in config:
             continue
         handled_keys.add(key)
-        rendered = format_config_value(value=config[key], template=template)
+        if key == "image_keys":
+            rendered = format_image_keys(image_keys=config[key])
+        elif key == "dataset":
+            rendered = format_dataset(dataset=config[key])
+        else:
+            rendered = format_config_value(value=config[key], template=template)
         parts.append(f"{label}{rendered}" if label else rendered)
     for key in sorted(key for key in config if key not in handled_keys):
         rendered = format_config_value(value=config[key], template="{}")
         parts.append(f"{key}-{rendered}")
-    return "_".join(parts)
+    return parts
+
+
+def make_run_slug(*, config: dict) -> str:
+    return "_".join(render_config_fields(config=config))
+
+
+def make_run_name(*, config: dict) -> str:
+    slug = config.get("name") or make_run_slug(config=config)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{slug}_{timestamp}"
 
 
 def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], list]:
@@ -905,6 +977,9 @@ def main() -> None:
     args = parse_args()
 
     config = load_config(path=args.config)
+
+    if config_uses_inheritance(path=args.config):
+        config["name"] = args.config.stem
 
     if args.steps is not None:
         config["steps"] = args.steps
