@@ -1,6 +1,6 @@
 ---
 description: Run a config sweep on Vast.ai, one instance per combo
-argument-hint: "[sweep-spec]"
+argument-hint: "<sweep-spec>"
 ---
 
 Run every combination in a sweep spec, each in its own freshly provisioned
@@ -10,7 +10,8 @@ are never committed.
 
 ## Inputs
 
-- `SWEEP_SPEC` = `${1:-configs/sweeps/bs32-seed.toml}`
+- `SWEEP_SPEC` = `${1}` — required. If it is empty, stop and ask the user for a
+  sweep spec path before doing anything else.
 
 ## Workflow
 

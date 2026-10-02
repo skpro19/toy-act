@@ -18,10 +18,10 @@ Spec example:
     seed = [0, 420]
 
 Usage:
-    uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml
-    uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --resolve-dir DIR
-    uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --materialize
-    uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml --exec --steps 10
+    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml
+    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --resolve-dir DIR
+    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --materialize
+    uv run python -m scripts.ablate --spec configs/sweeps/my-sweep.toml --exec --steps 10
 """
 
 import argparse
