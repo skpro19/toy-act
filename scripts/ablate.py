@@ -9,6 +9,7 @@ Spec example:
 
     description = "batch size and z sweep on ph"
     group = "configs/act_v2/BS-32"
+    name_template = "bs{batch_size}_s{seed}"   # optional; defaults to make_run_slug
 
     [fixed]
     dataset = "datasets/can/ph/2026-09-29_02-01-42_agentview_robot0_eye_in_hand_trimmed.hdf5"
@@ -16,8 +17,6 @@ Spec example:
     [grid]
     batch_size = [8, 32, 64]
     seed = [0, 420]
-
-    name_template = "bs{batch_size}_s{seed}"   # optional; defaults to make_run_slug
 
 Usage:
     uv run python -m scripts.ablate --spec configs/sweeps/bs32-seed.toml
@@ -113,6 +112,7 @@ def build_plan(*, spec: dict, group_dir: Path, base_config: dict) -> list[dict]:
             {
                 "slug": slug,
                 "overrides": overrides,
+                "effective": effective,
                 "path": group_dir / f"{slug}.toml",
             }
         )
@@ -147,6 +147,18 @@ def materialize(*, plan: list[dict], spec: dict, force: bool) -> list[Path]:
         path.write_text(
             render_delta(spec=spec, slug=entry["slug"], overrides=entry["overrides"])
         )
+        written.append(path)
+    return written
+
+
+def write_resolved(*, plan: list[dict], resolve_dir: Path) -> list[Path]:
+    resolve_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for entry in plan:
+        config = dict(entry["effective"])
+        config["name"] = entry["slug"]
+        path = resolve_dir / f"{entry['slug']}.toml"
+        path.write_text(tomli_w.dumps(config))
         written.append(path)
     return written
 
@@ -188,6 +200,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="training-step override passed to scripts.train_v2 with --exec",
     )
+    parser.add_argument(
+        "--resolve-dir",
+        type=Path,
+        help="write one resolved self-contained TOML per combo into this directory",
+    )
     return parser.parse_args()
 
 
@@ -202,7 +219,12 @@ def main() -> None:
     if args.materialize or args.exec:
         for path in materialize(plan=plan, spec=spec, force=args.force):
             print(f"wrote {path}")
-    else:
+
+    if args.resolve_dir is not None:
+        for path in write_resolved(plan=plan, resolve_dir=args.resolve_dir):
+            print(f"resolved {path}")
+
+    if not (args.materialize or args.exec or args.resolve_dir):
         print_plan(plan=plan)
 
     if args.exec:

@@ -1,5 +1,6 @@
 ---
 description: Train ACT v2 (CVAE) on a temporary Vast.ai RTX 4090 with S3 checkpoints
+argument-hint: "[config-path]"
 ---
 
 Run `scripts/train_v2.py` with a v4 config on a newly provisioned Vast.ai instance
@@ -55,21 +56,53 @@ cleanup.
 
 ## Config selection
 
-Before provisioning, ask the user which v4 training config to use with the
-`question` tool. List the up-to-5 most-recently-modified v4
-`configs/*.toml` files (newest first) and present each path as an option,
-defaulting to `configs/act_v2_instance_bs8_beta0p01_wu80_l1_img_agentview_eyeinhand.toml`.
-Record the selected path as `CONFIG_PATH`, verify it exists and is git-tracked
-(`git ls-files --error-unmatch "$CONFIG_PATH"`), and load it with
-`scripts.train_v2.load_config` to validate its v4 schema. Read its
-`checkpoint_every`, `steps`, ordered `image_keys`, and the required `dataset`
-into `CHECKPOINT_EVERY`, `STEPS`, `IMAGE_KEYS`, and `DATASET_PATH`. Derive
-`DATASET_S3_URI="s3://toy-act/$DATASET_PATH"` for the step-13 upload and
-download. Validate that the
-selected config's cameras are supported by `scripts/rollout.py`; confirm the
-downloaded dataset contains every requested `image_key` before launching.
-The selected config is part of the git clone on the instance, so no extra
-transfer is needed.
+Determine `CONFIG_PATH`, the local path to the training config:
+
+- If `CONFIG_PATH` is already set by the invoking workflow (for example
+  `ablate`), use it directly.
+- Otherwise, if the command argument `${1:-}` is non-empty, use it.
+- Otherwise ask the user with the `question` tool, listing the up-to-5
+  most-recently-modified `configs/act_v2/*/*.toml` files (newest first),
+  excluding `BASE.toml`, and defaulting to the first listed path.
+
+The config does **not** need to be git-tracked or committed. Resolve it to a
+self-contained TOML and record the compact run slug:
+
+```bash
+RUN_NAME="$(basename "$CONFIG_PATH" .toml)"
+RESOLVED_CONFIG=".vast-train-local/resolved/${RUN_NAME}.toml"
+mkdir -p "$(dirname "$RESOLVED_CONFIG")"
+uv run python -m scripts.resolve_config \
+  --config "$CONFIG_PATH" --out "$RESOLVED_CONFIG" --name "$RUN_NAME"
+```
+
+Read the effective values from the resolved config (this also validates the v4
+schema):
+
+```bash
+CONFIG_VALUES=$(uv run python -c '
+import json, sys
+from pathlib import Path
+from scripts.train_v2 import load_config
+c = load_config(path=Path(sys.argv[1]))
+print(json.dumps({
+    "checkpoint_every": c["checkpoint_every"],
+    "steps": c["steps"],
+    "image_keys": c["image_keys"],
+    "dataset": c["dataset"],
+}))
+' "$RESOLVED_CONFIG")
+CHECKPOINT_EVERY=$(printf '%s' "$CONFIG_VALUES" | jq -r '.checkpoint_every')
+STEPS=$(printf '%s' "$CONFIG_VALUES" | jq -r '.steps')
+IMAGE_KEYS=$(printf '%s' "$CONFIG_VALUES" | jq -r '.image_keys | join(" ")')
+DATASET_PATH=$(printf '%s' "$CONFIG_VALUES" | jq -r '.dataset')
+```
+
+Derive `DATASET_S3_URI="s3://toy-act/$DATASET_PATH"` for the step-13 upload and
+download. Validate that the config's cameras are supported by
+`scripts/rollout.py`; confirm the downloaded dataset contains every requested
+`image_key` before launching. The resolved config is transferred to the
+instance in step 10, independent of the git clone.
 
 ## Local run state
 
@@ -79,7 +112,7 @@ gitignored, so it is never committed. It holds:
 
 | File | Contents |
 |---|---|
-| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, dataset path, S3 checkpoint URI, and watcher pid/script/log/report paths |
+| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, resolved config path, dataset path, S3 checkpoint URI, and watcher pid/script/log/report paths |
 | `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
 | `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
 | `watcher.sh` | Copy of the committed `local-watcher.sh` template that was launched |
@@ -278,6 +311,17 @@ thresholds without asking the user.
    `.pi/prompts/scripts/vast-train/` helpers (`runner.sh`,
    `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`,
    `local-watcher.sh`).
+
+   Create the control dir and transfer the resolved self-contained config so
+   training does not depend on the config being in the git clone:
+
+   ```bash
+   ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
+     -p $PORT root@$HOST 'mkdir -p /workspace/toy-act/.vast-train'
+   scp -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
+     -P $PORT "$RESOLVED_CONFIG" \
+     root@$HOST:/workspace/toy-act/.vast-train/train-config.toml
+   ```
 11. On the instance, install `uv`, `awscli`, `tmux`, `build-essential`, and the
     headless GL libraries the checkpoint-evaluation renderer needs.
 
@@ -394,13 +438,13 @@ thresholds without asking the user.
     ```bash
     tmux new-session -d -s train \
       -e TRAIN_MODULE=scripts.train_v2 \
-      -e TRAIN_CONFIG="$CONFIG_PATH" \
+      -e TRAIN_CONFIG="/workspace/toy-act/.vast-train/train-config.toml" \
       'bash /workspace/toy-act/.pi/prompts/scripts/vast-train/runner.sh'
     ```
 
-    The dataset path is read from `CONFIG_PATH` on the instance, so `TRAIN_DATASET`
-    is not passed here; `runner.sh` still forwards it when set to override the
-    config. Poll for up to 30 seconds until
+    The dataset path is read from the transferred train config on the instance,
+    so `TRAIN_DATASET` is not passed here; `runner.sh` still forwards it when
+    set to override the config. Poll for up to 30 seconds until
     `/workspace/toy-act/.vast-train/state/run-status` reads `running`; require
     the `train` session to survive an additional five-second window. A missing
     tmux session is never a success signal; the persisted state files are
