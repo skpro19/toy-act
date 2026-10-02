@@ -8,6 +8,7 @@ dependencies = [
     "h5py>=3.16.0",
     "huggingface-hub>=1.32.0",
     "ipython>=9.17.1",
+    "tomli-w>=1.2.0",
     "torch==2.10.0",
 ]
 
