@@ -60,6 +60,9 @@ esac
 LOG="${WATCHER_LOG:-$RUN_DIR/watcher.log}"
 REPORT="${REPORT:-$RUN_DIR/report.txt}"
 PID_FILE="${WATCHER_PID:-$RUN_DIR/watcher.pid}"
+READY_FILE="$RUN_DIR/watcher.ready"
+# Linux process start ticks distinguish this watcher from a reused PID.
+PROCESS_START_TICKS=$(awk '{print $22}' "/proc/$$/stat")
 OWNER_FILE="${LOCAL_OWNER_FILE:-}"
 LOCK_FILE=/tmp/toy-act-local-wrapper.lock
 
@@ -392,7 +395,10 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 130' INT TERM HUP
 
-printf '%s\n' "$$" >"$PID_FILE"
+# Never let an acknowledgement from an earlier watcher authorize handoff.
+rm -f "$READY_FILE"
+printf '%s\n' "$$" >"$PID_FILE.tmp.$$"
+mv -f "$PID_FILE.tmp.$$" "$PID_FILE"
 
 if [ -z "$VAST_API_KEY" ]; then
   log "FATAL: VAST_API_KEY is empty; cannot own cleanup"
@@ -455,6 +461,20 @@ while true; do
   if [ "$RUN_STARTED" != yes ] && [ "$RUN_STATUS" = running ]; then
     RUN_STARTED=yes
     log "run-status=running observed; cleanup gate armed (requires terminal marker)"
+  fi
+  if [ "$RUN_STARTED" = yes ] && [ ! -f "$READY_FILE" ]; then
+    # Publish only after the cleanup gate is armed. A failed write must not
+    # exit the watcher or change its ownership; retry on the next probe.
+    if {
+      printf 'instance_id=%s\npid=%s\nprocess_start_ticks=%s\nobserved_at=%s\n' \
+        "$INSTANCE_ID" "$$" "$PROCESS_START_TICKS" "$(date +%s)" \
+        >"$READY_FILE.tmp.$$" && mv -f "$READY_FILE.tmp.$$" "$READY_FILE"
+    }; then
+      log "published handoff acknowledgement: $READY_FILE"
+    else
+      log "could not publish handoff acknowledgement; will retry"
+      rm -f "$READY_FILE.tmp.$$"
+    fi
   fi
   if [ "$RUN_STARTED" = yes ] && [ "$TRAIN_SESSION_STATE" != yes ]; then
     log "inconsistency: train session missing without terminal marker; continuing to poll"

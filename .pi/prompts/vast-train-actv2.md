@@ -54,6 +54,32 @@ invocations. Do not regenerate `RUN_TIMESTAMP` later in the workflow. Record
 `INSTANCE_LABEL` in `setup.env` so the exact label stays recoverable for
 cleanup.
 
+## Mandatory Git preflight
+
+Before resolving a config, running local project Python, uploading data, or
+provisioning an instance, require a clean, synchronized `act-v2` checkout:
+
+```bash
+PREFLIGHT_ARGS=()
+if [ -n "${SWEEP_GIT_COMMIT:-}" ]; then
+  PREFLIGHT_ARGS+=(--expected-commit "$SWEEP_GIT_COMMIT")
+fi
+GIT_COMMIT=$(timeout 120 bash .pi/prompts/scripts/vast-train/git-preflight.sh \
+  "${PREFLIGHT_ARGS[@]}") || { echo 'Git preflight failed; stop the workflow.' >&2; exit 1; }
+```
+
+The helper rejects the wrong branch, detached HEAD, staged or unstaged changes,
+non-ignored untracked files, and any ahead/behind/diverged state relative to the
+actual anonymous GitHub clone URL. Ignored configs, datasets, credentials, and
+`.vast-train-local/` state remain allowed. Remote lookup or fetch failures are
+fatal; never use stale refs. Keep `GIT_COMMIT` unchanged throughout provisioning
+and record it in `setup.env`. When invoked by `ablate`, the helper also requires
+that it equal `SWEEP_GIT_COMMIT`.
+
+On failure, report the diagnostics and stop before renting anything. Never
+repair Git automatically: do not stash, commit, push, pull, reset, or switch
+branches. Do not destroy or interrupt any existing runs or watchers.
+
 ## Config selection
 
 Determine `CONFIG_PATH`, the local path to the training config:
@@ -116,6 +142,8 @@ gitignored, so it is never committed. It holds:
 | `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
 | `watcher.sh` | Copy of the committed `local-watcher.sh` template that was launched |
 | `watcher.pid` | PID of the detached watcher, for liveness checks and recovery |
+| `watcher.ready` | Atomic handoff acknowledgement: instance id, watcher PID, Linux process start ticks, and observation timestamp |
+| `handoff.json` | Latest structured readiness check; only a fresh exit-0 check authorizes handoff |
 | `watcher.log` | Timestamped watcher events and training progress |
 | `report.txt` | Final outcome report written by the watcher (run name, S3 URIs, elapsed time, price, pinned commit, TensorBoard URL, S3 verification, cleanup status) |
 
@@ -150,15 +178,11 @@ resources are namespaced by the lease index, so they do not collide:
    - listing `s3://toy-act/checkpoints/act_v2/` succeeds;
    - the selected dataset is present locally or can be read from its S3 source;
    - `uv lock --check` succeeds.
-2. Pin the code to the latest `act-v2` commit and confirm it is anonymously
-   clonable, because the instance has no GitHub credentials:
-   - `git fetch origin act-v2` and set `GIT_COMMIT=$(git rev-parse origin/act-v2)`;
-   - `GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/skpro19/toy-act.git
-     act-v2` must succeed without prompting for a username. If it fails or
-     prompts, stop and ask the user to make the repository public; never embed
-     tokens, keys, or credentials;
-   - if the local working tree is dirty or local `act-v2` differs from `origin/act-v2`,
-     warn the user that the clone will not include those local changes.
+2. Require the mandatory Git preflight above to have succeeded before config
+   resolution. Use its verified `GIT_COMMIT`, not a newly resolved branch tip
+   or a stale `origin/act-v2`. Anonymous access was checked against the exact
+   clone URL; never embed tokens, keys, or credentials. A dirty or unsynced
+   checkout is an error, not a warning.
 3. Refuse to continue if an instance with the exact label `$INSTANCE_LABEL`
    already exists. Never destroy or reuse an unrelated instance.
 4. Search offers with the following hard filters:
@@ -323,10 +347,17 @@ thresholds without asking the user.
 10. Clone the pinned commit on the instance and verify it:
 
    ```bash
-   git clone --branch act-v2 --single-branch \
+   GIT_TERMINAL_PROMPT=0 git clone --branch act-v2 --single-branch \
      https://github.com/skpro19/toy-act.git /workspace/toy-act
+   GIT_TERMINAL_PROMPT=0 git -C /workspace/toy-act fetch --no-tags origin "$GIT_COMMIT"
+   git -C /workspace/toy-act checkout --detach "$GIT_COMMIT"
    test "$(git -C /workspace/toy-act rev-parse HEAD)" = "$GIT_COMMIT"
    ```
+
+   Explicitly checking out the pinned SHA prevents a push during provisioning
+   from silently changing the training revision. If the pinned commit cannot
+   be fetched or verified, fail setup and clean up this provisional instance;
+   never substitute the latest branch tip.
 
    The clone already contains `scripts/`, the project files, and the
    `.pi/prompts/scripts/vast-train/` helpers (`runner.sh`,
@@ -498,7 +529,12 @@ thresholds without asking the user.
 
     The template sources `$RUN_DIR/setup.env` for the run-specific values and
     owns step-7 cleanup plus the local `VAST_API_KEY`. Set `WATCHER_DRY_RUN=yes`
-    to rehearse the gate without destroying. It writes its PID to `watcher.pid`.
+    to rehearse the gate without destroying. It atomically writes its PID to
+    `watcher.pid`, invalidates any old `watcher.ready`, and publishes a fresh
+    acknowledgement only after observing training and arming the cleanup gate.
+    The acknowledgement binds the instance ID, PID, Linux process start ticks,
+    and observation timestamp. Missing or unwritable acknowledgement state
+    never permits handoff and must not change cleanup ownership.
     The watcher must:
     - record `RUN_STARTED=yes` only after it reads remote `state/run-status` as
       `running`, and initialize `TERMINAL_CONFIRMED=no`;
@@ -542,13 +578,43 @@ thresholds without asking the user.
       write a report to `.vast-train-local/toy-act-<INSTANCE_ID>/report.txt`
       recording the run name, S3 URI, elapsed time, selected offer price, pinned
       commit, TensorBoard URL, and final cleanup status.
-19. Report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
+19. Require the shared read-only handoff checker to succeed before claiming a
+    successful handoff:
+
+    ```bash
+    if uv run --frozen python .pi/prompts/scripts/vast-train/check-handoff.py \
+      "$RUN_DIR" --wait-seconds 90 > "$RUN_DIR/handoff.json"; then
+      HANDOFF_RC=0
+    else
+      HANDOFF_RC=$?
+    fi
+    ```
+
+    Inspect `handoff.json`. Exit 0 requires live remote training with no
+    terminal markers, a working local TensorBoard endpoint and forwarding
+    session, a live backup wrapper with `backup-running`,
+    `backup-artifact-ready`, and `backup-last-succeeded` (and no `backup-failed`),
+    plus a live watcher whose acknowledgement matches this instance and process.
+    Each SSH/HTTP probe is bounded and the 90-second wait has an overall
+    deadline. Exit 1 is not-ready/unknown, 2 is invalid configuration, and 3 is
+    remote terminal state. SSH failures cannot authorize cleanup.
+
+    On 1/2 or an outer command failure, report the unmet conditions and run
+    directory, stop new launches, and leave training and cleanup ownership with
+    the watcher. On 3, report terminal state and let the watcher finish backup
+    and cleanup; `ablate` must reconcile the watcher report and confirmed
+    removal before marking `done`/`failed`. Do not claim successful handoff,
+    mark a terminal run `running`, or destroy it from the pi session.
+
+20. After exit 0, report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
     URL, and the local run-state directory
     `.vast-train-local/toy-act-<INSTANCE_ID>/` (log at `watcher.log`, report at
     `report.txt`) to the user, then return without blocking on the training run.
     Do not keep polling training progress in the pi session. When invoked from
     the `ablate` driver, the driver starts the next combo as soon as this combo
-    satisfies the run gate and has been handed off.
+    satisfies the run gate and has been handed off. The driver must perform
+    its own fresh checker invocation before advancing; a saved JSON report
+    alone is not authorization.
 
 If setup fails before remote `run-status=running`, destroy the instance through
 the watcher cleanup (or directly when no watcher was started yet) and report the
