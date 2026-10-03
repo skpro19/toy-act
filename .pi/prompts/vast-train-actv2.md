@@ -1,671 +1,145 @@
 ---
-description: Train ACT v2 (CVAE) on a temporary Vast.ai RTX 4090 with S3 checkpoints
-argument-hint: "<config-path>"
+description: Train ACT v2 on a fresh Vast.ai RTX 4090 with durable local logging
+argument-hint: "<config-path> [--plan] [--resume <iteration-id>]"
 ---
 
-Run `scripts/train_v2.py` with a v4 config on a newly provisioned Vast.ai instance
-and store every completed checkpoint in `s3://toy-act/checkpoints/act_v2/`.
-Provision the latest
-commit of the `act-v2` branch by cloning GitHub on the instance; do not transfer the
-local working tree. Fetch the dataset from S3 at its project-relative path
-instead of copying it from the local machine.
+Train ACT v2 using `.pi/prompts/scripts/vast-train/workflow.py`. This same
+script is the ablation driver; do not reproduce its implementation with ad hoc
+commands. The agent owns invocation and reporting, not background monitoring.
 
-The instance follows the `flywheel-4090` pattern: a durable runner owns the
-training process, a separate backup wrapper synchronizes run-scoped checkpoints
-and TensorBoard runs to S3, and TensorBoard is reachable from the local machine
-through an SSH port-forward. The pi session is only responsible for
-provisioning and handoff; a detached local watcher owns the run to completion,
-including cleanup.
+## Inputs and invocation
 
-## Fixed configuration
+User arguments: `$ARGUMENTS`.
 
-| Setting | Value |
+Use an explicitly supplied config path, or a caller-provided `CONFIG_PATH`.
+Without either, ask for the path; no interactive picker or default config.
+An explicit `--resume <iteration-id-or-dir>` needs no original config. Support
+`--plan` for config resolution/snapshotting without Vast/AWS operations; reject
+other arguments. Quote paths when constructing tool commands.
+
+```bash
+uv run --frozen python .pi/prompts/scripts/vast-train/workflow.py \
+  --config "$CONFIG_PATH"
+# Optional: --plan, or --resume "$ITERATION_ID" (not both).
+# If supplied by a caller: --expected-commit "$SWEEP_GIT_COMMIT"
+```
+
+Each ordinary invocation starts fresh. Repeated use of a config never inherits
+old completion, interruption, or pinned-revision state. Resume is explicit and
+uses immutable saved configs; source files are not resolved again. Ablations
+invoke the shared driver once with `--spec`, not nested single-config workflows.
+
+## Non-negotiable policy
+
+| Setting | Requirement |
 |---|---|
-| GPU | One full RTX 4090 |
-| Maximum price | $0.80/hour |
-| Image | `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` |
-| Disk | 100 GB |
-| AWS profile | `toy-pickplace-backup` |
-| S3 region | `ap-south-1` |
-| S3 destination | `s3://toy-act/checkpoints/act_v2/` |
-| Git remote | `https://github.com/skpro19/toy-act.git` |
-| Git branch | `act-v2` |
-| Dataset | resolved from the selected config's `dataset` key into `DATASET_PATH` |
-| Dataset S3 source | `s3://toy-act/` + `DATASET_PATH` |
-| Remote project | `/workspace/toy-act` |
-| Remote control dir | `/workspace/toy-act/.vast-train` |
-| Remote TensorBoard | `127.0.0.1:6006` on the instance |
-| Instance label | `toy-act-train-actv2-<timestamp>` (generated per invocation) |
-| Local run state | `.vast-train-local/toy-act-<INSTANCE_ID>/` |
+| Git | Clean, synchronized `act-v2`; anonymous clone of `https://github.com/skpro19/toy-act.git`; pinned SHA verified remotely |
+| GPU / price | Exactly one full RTX 4090, approximately 24 GiB; offer at most $0.80/hour; record actual price separately |
+| Image / disk | `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`; 100 GB rental; at least 100 GB available at `/workspace` |
+| CPU / RAM | At least 24 allowed online physical cores; supported Zen 3+ family; quota/logical allocation at least 90% of advertised effective vCPUs; at least 64 GB allocated RAM, consistent with offer |
+| GPU power / PCIe | At least 400 W; Gen4 x16 capability; advertised PCIe bandwidth at least 20 GB/s; thermal and power-brake slowdown inactive |
+| Offer connectivity | Advertised download ≥500 Mbps, upload ≥200 Mbps, reliability ≥0.99; rentable/verified, no active display |
+| Measured S3 network | Median of 7 successful PUTs ≤5000 ms; median of 3 successful 4 MiB uploads ≥1000 KB/s |
+| Offer ordering | EPYC 9005, EPYC 9004, Threadripper 7000, EPYC 7003, Ryzen 7000/9000; then price, disk bandwidth, reliability |
+| Retry / quarantine | At most three machines per combo; GPU-start failures quarantine machine ID for 24 hours; search again before replacement |
+| AWS | Profile `toy-pickplace-backup`, region `ap-south-1`; do not request administrative authentication |
+| Data | Config's project-relative `datasets/` path; S3 URI `s3://toy-act/<path>`; verify size, local SHA when available, and requested cameras |
+| Artifacts | `s3://toy-act/checkpoints/act_v2/<run>/` and `s3://toy-act/runs/act_v2/<run>/` |
+| Remote project | `/workspace/toy-act`; control directory `.vast-train` |
 
-## Instance label
+Never add `gpu_frac=1` (it excludes full single GPUs on multi-GPU hosts), weaken
+filters, substitute another revision, or automatically repair Git. Ignored local
+configs/state are allowed; other dirty or unsynchronized checkouts stop launches.
+Unknown or missing hardware/API data fails closed.
 
-Construct the instance label once per invocation, before provisioning, by
-appending a date-time stamp to the fixed prefix:
+## Script-owned stages
 
-```bash
-RUN_TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
-INSTANCE_LABEL="toy-act-train-actv2-${RUN_TIMESTAMP}"
-```
-
-`RUN_TIMESTAMP` uses the same `YYYY-MM-DD_HH-MM-SS` form as `make_run_name`, so the
-label stays recognizable while remaining unique across repeated or concurrent
-invocations. Do not regenerate `RUN_TIMESTAMP` later in the workflow. Record
-`INSTANCE_LABEL` in `setup.env` so the exact label stays recoverable for
-cleanup.
-
-## Mandatory Git preflight
-
-Before resolving a config, running local project Python, uploading data, or
-provisioning an instance, require a clean, synchronized `act-v2` checkout:
-
-```bash
-PREFLIGHT_ARGS=()
-if [ -n "${SWEEP_GIT_COMMIT:-}" ]; then
-  PREFLIGHT_ARGS+=(--expected-commit "$SWEEP_GIT_COMMIT")
-fi
-GIT_COMMIT=$(timeout 120 bash .pi/prompts/scripts/vast-train/git-preflight.sh \
-  "${PREFLIGHT_ARGS[@]}") || { echo 'Git preflight failed; stop the workflow.' >&2; exit 1; }
-```
-
-The helper rejects the wrong branch, detached HEAD, staged or unstaged changes,
-non-ignored untracked files, and any ahead/behind/diverged state relative to the
-actual anonymous GitHub clone URL. Ignored configs, datasets, credentials, and
-`.vast-train-local/` state remain allowed. Remote lookup or fetch failures are
-fatal; never use stale refs. Keep `GIT_COMMIT` unchanged throughout provisioning
-and record it in `setup.env`. When invoked by `ablate`, the helper also requires
-that it equal `SWEEP_GIT_COMMIT`.
-
-On failure, report the diagnostics and stop before renting anything. Never
-repair Git automatically: do not stash, commit, push, pull, reset, or switch
-branches. Do not destroy or interrupt any existing runs or watchers.
-
-## Config selection
-
-Determine `CONFIG_PATH`, the local path to the training config:
-
-- If `CONFIG_PATH` is already set by the invoking workflow (for example
-  `ablate`), use it directly.
-- Otherwise, if the command argument `${1:-}` is non-empty, use it.
-- Otherwise stop and ask the user for an explicit config path. Do not guess or
-  fall back to a default.
-
-The config does **not** need to be git-tracked or committed. Resolve it to a
-self-contained TOML and record the compact run slug:
-
-```bash
-RUN_NAME="$(basename "$CONFIG_PATH" .toml)"
-RESOLVED_CONFIG=".vast-train-local/resolved/${RUN_NAME}.toml"
-mkdir -p "$(dirname "$RESOLVED_CONFIG")"
-uv run python -m scripts.resolve_config \
-  --config "$CONFIG_PATH" --out "$RESOLVED_CONFIG" --name "$RUN_NAME"
-```
-
-Read the effective values from the resolved config (this also validates the v4
-schema):
-
-```bash
-CONFIG_VALUES=$(uv run python -c '
-import json, sys
-from pathlib import Path
-from scripts.train_v2 import load_config
-c = load_config(path=Path(sys.argv[1]))
-print(json.dumps({
-    "checkpoint_every": c["checkpoint_every"],
-    "steps": c["steps"],
-    "image_keys": c["image_keys"],
-    "dataset": c["dataset"],
-}))
-' "$RESOLVED_CONFIG")
-CHECKPOINT_EVERY=$(printf '%s' "$CONFIG_VALUES" | jq -r '.checkpoint_every')
-STEPS=$(printf '%s' "$CONFIG_VALUES" | jq -r '.steps')
-IMAGE_KEYS=$(printf '%s' "$CONFIG_VALUES" | jq -r '.image_keys | join(" ")')
-DATASET_PATH=$(printf '%s' "$CONFIG_VALUES" | jq -r '.dataset')
-```
-
-Derive `DATASET_S3_URI="s3://toy-act/$DATASET_PATH"` for the step-13 upload and
-download. Validate that the config's cameras are supported by
-`scripts/rollout.py`; confirm the downloaded dataset contains every requested
-`image_key` before launching. The resolved config is transferred to the
-instance in step 10, independent of the git clone.
-
-## Local run state
-
-Create one `.vast-train-local/toy-act-<INSTANCE_ID>/` directory per instance at
-provisioning time. It is the local audit and recovery record for the run and is
-gitignored, so it is never committed. It holds:
-
-| File | Contents |
+| Stage | Canonical implementation |
 |---|---|
-| `setup.env` | Key/value record: instance id, instance label, SSH host/port, pinned commit, offer and actual price, local workflow index, tmux session names, TensorBoard port, run name, resolved config path, dataset path, S3 checkpoint URI, and watcher pid/script/log/report paths |
-| `instance.json` | Raw vast.ai instance record captured at provisioning (contains a `jupyter_token`, so treat it as sensitive) |
-| `known_hosts` | Pinned host keys used with `StrictHostKeyChecking=yes` |
-| `watcher.sh` | Copy of the committed `local-watcher.sh` template that was launched |
-| `watcher.pid` | PID of the detached watcher, for liveness checks and recovery |
-| `watcher.ready` | Atomic handoff acknowledgement: instance id, watcher PID, Linux process start ticks, and observation timestamp |
-| `handoff.json` | Latest structured readiness check; only a fresh exit-0 check authorizes handoff |
-| `watcher.log` | Timestamped watcher events and training progress |
-| `report.txt` | Final outcome report written by the watcher (run name, S3 URIs, elapsed time, price, pinned commit, TensorBoard URL, S3 verification, cleanup status) |
+| Iteration identity, snapshots, state, locks, summaries | `iteration.py`, `workflow.py`, `workflow_common.py` |
+| Git revision gate | `git-preflight.sh` |
+| Local tools, AWS access, lock/config/dataset-source checks | `setup_run.py` |
+| Search, ranking, durable create intent, exact-label reconciliation, provisional cleanup | `provision.py` |
+| Allowed CPU/cgroup/GPU/disk measurements and validation | `hardware-probe.sh`, `hardware_gate.py` |
+| S3 latency/upload measurements | `network-gate.sh` (signed URLs sent via SSH stdin, never logged) |
+| Clone/pin, dependencies, CUDA/import/EGL checks | `remote-setup.sh` |
+| Config/credential transfer, dataset sync and integrity/camera checks | `setup_run.py`, `verify-dataset.sh` |
+| Idempotent TensorBoard/training/backup launch | `start-services.sh`, existing `runner.sh`, `ckpt-bkp-wrapper.sh` |
+| Local wrapper allocation and forwarding | `local-wrapper-lease.sh`, `setup_run.py` |
+| Detached monitoring, terminal verification and cleanup | Saved copy of `local-watcher.sh` |
+| Authoritative read-only handoff gate | `check-handoff.py` |
 
-## Concurrent invocations and SSH forwarding
+All implementation lives under `.pi/prompts/scripts/vast-train/`, apart from
+project config/training modules in `scripts/`. `.vast-train-local/` contains
+runtime records, not canonical helpers. Per-run watcher copies are intentional
+historical snapshots and remain unchanged on recovery.
 
-Multiple labeled instances may run at once (for example when the `ablate`
-driver hands off one combo and immediately provisions the next). Per-run local
-resources are namespaced by the lease index, so they do not collide:
+Dependencies are installed with `uv sync --frozen --only-group train`; setup
+verifies CUDA, rollout imports and offscreen EGL before launching. Every remote
+command has a timeout. No AWS/Vast secret is embedded in the clone or repository.
+Temporary credential files are mode 600 and removed locally after transfer;
+`VAST_API_KEY` is never sent to the instance. Dataset upload retries are bounded;
+never delete datasets with the workload profile.
 
-- each invocation gets its own `.vast-train-local/toy-act-<INSTANCE_ID>/` run
-  dir, `known_hosts`, and detached watcher;
-- `local-wrapper-lease.sh allocate` returns a unique `INDEX`, so the local
-  TensorBoard port is `TB_PORT=$((6006 + INDEX))` and the tmux wrappers are
-  `act-ssh-$INDEX` / `act-tb-$INDEX`; the remote port `6006` is per instance;
-- the TensorBoard URL is `http://localhost:$TB_PORT/`, taken from the lease —
-  never assume `6006`; record `TB_URL=http://localhost:$TB_PORT/` in
-  `setup.env`;
-- the TB forward is one-shot (`ssh -N`). A dropped forward (local suspend,
-  network blip, or instance reconnect) does not affect training, backup, or the
-  watcher; restore it per run with `/resume-tb-forwarding` using the recorded
-  `INDEX`/`TB_PORT`/`TB_SESSION`, and do not allocate a new index;
-- only the watcher releases a lease (kills `act-ssh-$INDEX`/`act-tb-$INDEX` and
-  removes `/tmp/toy-act-local-wrapper-$INDEX.owner`). Never kill those sessions
-  for a live run.
+## Cleanup and handoff contract
 
-## Workflow
+- Before training launch intent, provisioning may remove only its exact
+  provisional rental. API failures or malformed output never prove removal;
+  unverified removal stops retries.
+- The driver persists launch intent and starts a conservative detached watcher
+  **before** contacting the remote launch helper. From that moment, the driver
+  must not destroy the instance—even if SSH fails before returning a result.
+- A conservative/restarted watcher requires a directly read remote `completed`
+  or `failed` marker before destruction. Interruption, suspend, signals, shell
+  errors, API/SSH failures, or a missing train session cannot bypass this gate.
+- The watcher holds an exclusive per-run lock. It retries SSH indefinitely,
+  observes training, publishes a PID/start-ticks-bound readiness acknowledgement,
+  and owns backup verification, exact-instance cleanup and the final report.
+- Successful training triggers final-backup waiting, expected checkpoint/config
+  verification and TensorBoard scalar verification. Failed training preserves
+  diagnostics and best-effort backup. Outcome, verification and cleanup remain
+  separate; a successful training outcome alone is not `done`.
+- Handoff requires live nonterminal training; a working recorded TensorBoard
+  forward; live backup with artifact/last-success markers and no failure marker;
+  and a matching live watcher acknowledgement. Only a fresh checker exit 0
+  permits handoff. Exit 1/2 blocks launches; exit 3 waits for watcher report and
+  confirmed removal. No checker result authorizes cleanup.
+- An explicit resume may recover the same instance, restart a dead saved watcher
+  and restore the same local forwarding lease. Interrupted nonterminal watcher
+  reports are archived before recovery; missing/modified saved setup or watcher
+  snapshots block restart. It never reruns terminal training or blindly replaces
+  an uncertain create request. Ambiguous setup/report states
+  remain blocked with diagnostics rather than being destroyed automatically.
 
-1. Require `vastai`, `aws`, `jq`, `ssh`, `ssh-keyscan`, `git`, `tmux`, `flock`,
-   `ss`, and `curl`. Verify:
-   - `vastai show instances --raw` succeeds;
-   - `aws sts get-caller-identity --profile toy-pickplace-backup` succeeds;
-   - listing `s3://toy-act/checkpoints/act_v2/` succeeds;
-   - the selected dataset is present locally or can be read from its S3 source;
-   - `uv lock --check` succeeds.
-2. Require the mandatory Git preflight above to have succeeded before config
-   resolution. Use its verified `GIT_COMMIT`, not a newly resolved branch tip
-   or a stale `origin/act-v2`. Anonymous access was checked against the exact
-   clone URL; never embed tokens, keys, or credentials. A dirty or unsynced
-   checkout is an error, not a warning.
-3. Refuse to continue if an instance with the exact label `$INSTANCE_LABEL`
-   already exists. Never destroy or reuse an unrelated instance.
-4. Search offers with the following hard filters:
+The detached watcher survives session return/suspend, not host reboot. No reboot
+supervisor is installed. Resume the recorded iteration after reboot; do not
+silently create replacements. Historical unrelated runs remain untouched.
 
-   ```bash
-   vastai search offers \
-     'gpu_name=RTX_4090 num_gpus=1 gpu_ram>=24 gpu_max_power>=400 compute_cap>=890 cpu_cores_effective>=24 cpu_ram>=64 pci_gen>=4 pcie_bw>=20 inet_down>=500 inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false' \
-     --order dph_total+ --raw
-   ```
+## Local records and response
 
-   Do not add `gpu_frac=1`. Vast.ai defines `gpu_frac` as GPUs in the offer
-   divided by GPUs in the host, so it rejects a full single 4090 on a multi-GPU
-   host. `num_gpus=1` together with `gpu_ram>=24` already guarantees one full
-   GPU. The `cpu_cores_effective>=24`, `cpu_ram>=64`, `gpu_max_power>=400`,
-   `pci_gen>=4`, and `pcie_bw>=20` filters mirror the hardware gate enforced in
-   step 9 so that instances which pass a bare capacity check but throttle under
-   load are rejected up front.
+Iteration record:
+`.vast-train-local/ablations/<config-stem>/<iteration-id>/` with manifest/state,
+immutable inputs/configs, timestamped `driver.log`, structured `events.jsonl`,
+stage diagnostics, and driver-time `summary.txt`.
 
-5. Keep offers at or below `$0.80/hour`, reject EPYC 7001/7002, and rank by
-   CPU family (EPYC 9005, EPYC 9004, Threadripper 7000, EPYC 7003, modern
-   Ryzen 7000/9000), then price, disk bandwidth, and reliability. Also reject
-   offers whose `machine_id` appears in
-   `.vast-train-local/failed-machines.tsv` with a failure timestamp from the
-   preceding 24 hours. Each quarantine record is a tab-separated Unix
-   timestamp, machine id, and fixed reason (`gpu-start-error`). Ignore older
-   records. Automatically try up to the best three non-quarantined offers in
-   order. Never weaken a filter without asking the user.
+Instance record:
+`.vast-train-local/toy-act-<ID>/` with `setup.env`, sensitive `instance.json`,
+`dataset.json`, `known_hosts`, streaming `setup.log`, hashed `watcher.sh`,
+`watcher.lock`, `watcher.pid`, `watcher.ready`, `watcher.out`, `watcher.log`,
+`handoff.json`, `report.txt`, and archived interrupted reports in `report-history/`.
+Local wrapper indices/ports are allocated per instance; use the recorded
+TensorBoard URL, never assume port 6006. Resume restores the recorded lease after
+reboot only if the slot is free or still owned by this instance. Occupied slots
+are never stolen, and old watcher cleanup cannot release a newer run's lease.
+A lost forward does not stop training.
 
-   Vast may charge more than the offer's advertised `dph_total` (for example
-   `$0.5356` offered vs `$0.5796` actual). Apply the `$0.80/hour` cap to the
-   offer price and record both the offer and the actual instance `dph_total` in
-   `setup.env`.
-6. Create exactly one instance using the fixed image, disk, SSH direct mode,
-   and `INSTANCE_LABEL`. Reconcile the instance by exact label after every
-   create attempt; do not rely only on parsing create-command output.
-7. Once an instance ID exists, the detached watcher described in step 18 owns
-   cleanup for that exact instance. Before training reaches `run-status=running`,
-   setup failures may destroy the instance. After the watcher has observed
-   `run-status=running`, it may destroy the instance only after it has read a
-   remote `state/completed` or `state/failed` marker. An EXIT trap, signal,
-   local suspend, SSH failure, Vast API failure, or missing tmux session must
-   never bypass this terminal-state gate. Do not install cleanup in the
-   pi session shell: returning from the session must not destroy the
-   running instance.
-8. Poll the exact instance record for up to ten minutes. Require
-   `actual_status=running` before accepting `vastai ssh-url INSTANCE_ID` or
-   attempting SSH. If `status_msg` reports a GPU error or says the instance is
-   unable to start, append the selected offer's `machine_id` to
-   `.vast-train-local/failed-machines.tsv` under the same
-   `/tmp/toy-act-local-wrapper.lock` `flock`, destroy the failed instance and
-   verify its removal, re-run the offer search, and continue with the next
-   ranked non-quarantined machine. Quarantine by `machine_id`, not offer id,
-   because Vast can immediately advertise the same machine under a new offer
-   id. Use a command-specific temporary `known_hosts` file populated by
-   `ssh-keyscan`; then use `StrictHostKeyChecking=yes` for all SSH, file
-   transfers, and port-forwarding.
-9. Verify the provisioned hardware against the selected offer before cloning.
-   Treat the rental as provisional and collect:
+Run the foreground driver with a bounded timeout appropriate to the dataset.
+On interruption, report the saved iteration ID/resume command; no implicit fresh
+retry. Exit 0 means handoff/reconciliation or plan creation, not training success;
+1 blocked, 2 invalid CLI, 130 interrupted.
 
-   ```bash
-   ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-     -p $PORT root@$HOST '
-     set -e
-     lscpu
-     lscpu -e=CPU,CORE,SOCKET,ONLINE
-     lscpu -p=CORE,SOCKET | grep -v "^#" | sort -u | wc -l
-     nproc
-     grep "^Cpus_allowed_list:" /proc/self/status
-     free -b
-     grep "^MemTotal:" /proc/meminfo
-     test ! -r /sys/fs/cgroup/memory.max || cat /sys/fs/cgroup/memory.max
-     test ! -r /sys/fs/cgroup/memory/memory.limit_in_bytes || cat /sys/fs/cgroup/memory/memory.limit_in_bytes
-     test ! -r /sys/fs/cgroup/cpu.max || cat /sys/fs/cgroup/cpu.max
-     test ! -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us || cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us
-     test ! -r /sys/fs/cgroup/cpu/cpu.cfs_period_us || cat /sys/fs/cgroup/cpu/cpu.cfs_period_us
-     df -hT /workspace /
-     nvidia-smi --query-gpu=name,memory.total,power.limit,power.default_limit,pcie.link.gen.max,pcie.link.width.max,pcie.link.gen.current,pcie.link.width.current,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.hw_power_brake_slowdown --format=csv
-   '
-   ```
-
-   Compare the results with the selected offer and require:
-
-   | Check | Requirement |
-   |---|---|
-   | Physical cores | At least 24 allowed unique `(CORE, SOCKET)` pairs |
-   | CPU generation | Zen 3 or newer; reject EPYC 7001/7002 |
-   | CPU quota | At least 90% of advertised effective vCPUs |
-   | RAM | At least 64 GB allocated and consistent with the offer |
-   | GPU | Exactly one RTX 4090 with approximately 24 GB VRAM |
-   | GPU power | At least 400 W |
-   | PCIe | Gen4 x16 capability and offer `pcie_bw >= 20` GB/s |
-   | Disk | At least 100 GB available at `/workspace` |
-   | Throttling | Thermal and power-brake slowdown inactive |
-
-   Count physical cores only from online CPU IDs in `Cpus_allowed_list`, then
-   count unique `(CORE, SOCKET)` pairs. Interpret finite cgroup CPU and memory
-   limits as the allocation gates; use visible memory only when the cgroup limit
-   is unlimited. An idle PCIe link may downshift, so maximum Gen4 x16 capability
-   plus the passing offer measurement is sufficient unless other evidence
-   indicates restriction. Record the CPU model, logical CPUs, RAM, GPU identity,
-   GPU power, PCIe capability, and disk, and list every mismatch with the offer.
-   The SSH checks measure local compute only; disk and network values still come
-   from the offer. If a check fails, destroy the instance directly (the watcher
-   has not been launched yet) and try the next-ranked offer; if none remain, stop
-   and report.
-
-### Network quality acceptance (runs after step 9, before cloning)
-
-Hardware checks measure local compute. A separate gate measures actual S3
-operation latency and upload speed to the bucket where checkpoints and runs are
-written (`s3://toy-act/`). This catches instances whose advertised `inet_up` is
-misleading due to geographic distance, ISP throttling, or host oversubscription.
-
-Generate presigned PUT/DELETE URLs locally through the `toy-pickplace-backup`
-profile, then transfer and run
-`.pi/prompts/scripts/vast-train/network-gate.sh` on the instance:
-
-```bash
-TEMP_NETGATE_KEY="runs/act_v2/.netgate/$(date +%s%N)"
-S3_PRESIGNED_PUT=$(AWS_PROFILE=toy-pickplace-backup uv run python -c "
-import boto3
-s3 = boto3.Session(profile_name='toy-pickplace-backup', region_name='ap-south-1').client('s3')
-print(s3.generate_presigned_url('put_object',
-    Params={'Bucket': 'toy-act', 'Key': '${TEMP_NETGATE_KEY}'}, ExpiresIn=900))
-")
-S3_PRESIGNED_DELETE=$(AWS_PROFILE=toy-pickplace-backup uv run python -c "
-import boto3
-s3 = boto3.Session(profile_name='toy-pickplace-backup', region_name='ap-south-1').client('s3')
-print(s3.generate_presigned_url('delete_object',
-    Params={'Bucket': 'toy-act', 'Key': '${TEMP_NETGATE_KEY}'}, ExpiresIn=900))
-")
-
-B64_NG=$(base64 -w0 .pi/prompts/scripts/vast-train/network-gate.sh)
-
-NETGATE_OUTPUT=$(S3_PRESIGNED_PUT="$S3_PRESIGNED_PUT" \
-  S3_PRESIGNED_DELETE="$S3_PRESIGNED_DELETE" \
-  ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-    -o BatchMode=yes -p $PORT root@$HOST \
-    "printf '%s' '${B64_NG}' | base64 -d > /tmp/network-gate.sh && \
-     chmod +x /tmp/network-gate.sh && \
-     S3_PRESIGNED_PUT='${S3_PRESIGNED_PUT}' \
-     S3_PRESIGNED_DELETE='${S3_PRESIGNED_DELETE}' \
-     bash /tmp/network-gate.sh" 2>/dev/null)
-
-echo "$NETGATE_OUTPUT"
-```
-
-Require:
-
-| Check | Requirement |
-|---|---|
-| S3 PUT operation latency | Median of 7 successful samples ≤ 5000 ms against the presigned bucket key |
-| S3 upload | Median of 3 successful 4 MiB uploads ≥ 1000 KB/s to the bucket |
-
-The test key lives under `runs/act_v2/.netgate/`, inside the workload profile's
-allowed prefix scope. If the output does not start with `PASSED`, remove
-`/tmp/network-gate.sh` and `/tmp/.netgate-test.bin` on the instance, destroy the
-provisional instance, verify removal, and return to step 4 to try the
-next-ranked offer; if none remain, stop and report. Do not weaken these
-thresholds without asking the user.
-
-10. Clone the pinned commit on the instance and verify it:
-
-   ```bash
-   GIT_TERMINAL_PROMPT=0 git clone --branch act-v2 --single-branch \
-     https://github.com/skpro19/toy-act.git /workspace/toy-act
-   GIT_TERMINAL_PROMPT=0 git -C /workspace/toy-act fetch --no-tags origin "$GIT_COMMIT"
-   git -C /workspace/toy-act checkout --detach "$GIT_COMMIT"
-   test "$(git -C /workspace/toy-act rev-parse HEAD)" = "$GIT_COMMIT"
-   ```
-
-   Explicitly checking out the pinned SHA prevents a push during provisioning
-   from silently changing the training revision. If the pinned commit cannot
-   be fetched or verified, fail setup and clean up this provisional instance;
-   never substitute the latest branch tip.
-
-   The clone already contains `scripts/`, the project files, and the
-   `.pi/prompts/scripts/vast-train/` helpers (`runner.sh`,
-   `ckpt-bkp-wrapper.sh`, `local-wrapper-lease.sh`, `network-gate.sh`,
-   `local-watcher.sh`).
-
-   Create the control dir and transfer the resolved self-contained config so
-   training does not depend on the config being in the git clone:
-
-   ```bash
-   ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-     -p $PORT root@$HOST 'mkdir -p /workspace/toy-act/.vast-train'
-   scp -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-     -P $PORT "$RESOLVED_CONFIG" \
-     root@$HOST:/workspace/toy-act/.vast-train/train-config.toml
-   ```
-11. On the instance, install `uv`, `awscli`, `tmux`, `build-essential`, and the
-    headless GL libraries the checkpoint-evaluation renderer needs.
-
-    `scripts/train_v2.py` runs a robosuite rollout at every checkpoint, so it
-    imports `robosuite`, `robomimic`, and `mujoco`. The `train` dependency group
-    therefore contains the full training stack, and its simulator packages are
-    sourced from pinned upstream git revisions in `[tool.uv.sources]`
-    (`robomimic` @ `d309eae`, `robosuite` @ `a071383`, v1.5.1, per the official
-    robomimic install guide). `uv sync` fetches and builds them itself; no
-    `third_party/` clone or transfer is needed. The compiler is required because
-    robosuite pulls in `pynput` -> `evdev`, which builds from source and
-    otherwise fails with `No such file or directory: 'cc'`.
-
-    Install the tooling and sync the `train` group, which is self-sufficient:
-
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh          # -> /root/.local/bin/uv
-    /opt/conda/bin/pip install --quiet awscli
-    apt-get update -qq && apt-get install -y -qq \
-      tmux build-essential libgl1 libglib2.0-0 libegl1 libgles2 libglfw3
-    cd /workspace/toy-act
-    /root/.local/bin/uv sync --frozen --only-group train
-    ```
-
-    `runner.sh` and the TensorBoard session both run `uv run --frozen
-    --only-group train`, so they reuse this same self-sufficient environment.
-
-    Verify `torch.cuda.is_available()` (printing the GPU name), that the rollout
-    imports load, and that off-screen EGL rendering works, because a broken
-    renderer would otherwise surface only at the first checkpoint:
-
-    ```bash
-    cd /workspace/toy-act && MUJOCO_GL=egl /root/.local/bin/uv run --frozen \
-      --only-group train python - <<'PY'
-    import torch
-    assert torch.cuda.is_available()
-    print("GPU:", torch.cuda.get_device_name(0))
-    import robosuite, robomimic, mujoco
-    print("robosuite", robosuite.__version__, "robomimic", robomimic.__version__)
-    xml = '<mujoco><worldbody><body><geom type="sphere" size="0.1"/></body></worldbody></mujoco>'
-    model = mujoco.MjModel.from_xml_string(xml)
-    data = mujoco.MjData(model)
-    renderer = mujoco.Renderer(model, height=84, width=84)
-    renderer.update_scene(data)
-    frame = renderer.render()
-    renderer.close()
-    print("EGL render", frame.shape, frame.dtype)
-    PY
-    ```
-
-    Require the GPU name, successful `robosuite`/`robomimic` imports, and
-    `EGL render (84, 84, 3) uint8`. Stop and report if it fails rather than
-    launching.
-12. Resolve `toy-pickplace-backup` credentials locally with
-    `aws configure export-credentials`. Write them to a mode-600 temporary env
-    file without printing them, append `AWS_REGION` and `S3_BUCKET`, transfer it
-    as `/workspace/toy-act/.vast-train/s3-env.env` (creating
-    `/workspace/toy-act/.vast-train` first), chmod it 600 remotely, and delete
-    the local temporary file. Never transfer `VAST_API_KEY` or print AWS
-    credentials.
-13. Ensure the selected dataset (`DATASET_PATH`, S3 `DATASET_S3_URI`) is in
-    the bucket, then fetch it on the instance:
-    - if the dataset exists locally, upload it to `DATASET_S3_URI` with the
-      workload profile, skipping upload when the object already exists with the
-      same size. The multi-gigabyte multipart upload can hit transient endpoint
-      errors, so set `AWS_MAX_ATTEMPTS=10 AWS_RETRY_MODE=adaptive` and retry up
-      to three times; if it is not local, require that the S3 object already
-      exists;
-    - the workload profile can `PutObject` under `datasets/` but is **not**
-      authorized to `DeleteObject` there, so never attempt to remove dataset
-      objects with it;
-    - on the instance, download it from `DATASET_S3_URI` to `DATASET_PATH` using
-      the transferred credentials and installed `awscli`;
-    - verify the remote SHA-256 matches the local file when present; otherwise
-      verify its byte size against S3 `head-object` and open it with `h5py` to
-      check the requested camera keys before launching.
-14. Create the remote control directories
-    `/workspace/toy-act/.vast-train/{logs,state}` and start TensorBoard in a
-    detached tmux session named `tensorboard`:
-
-    ```bash
-    tmux new-session -d -s tensorboard \
-      'cd /workspace/toy-act && exec /root/.local/bin/uv run --frozen \
-       --only-group train python -m tensorboard.main \
-       --logdir runs/act_v2 --host 127.0.0.1 --port 6006'
-    ```
-
-    Poll its endpoint from the instance for up to 12 attempts at five-second
-    intervals and stop if the session exits or
-    `http://127.0.0.1:6006/` never becomes reachable.
-15. Claim the lowest unused local workflow index with
-    `.pi/prompts/scripts/vast-train/local-wrapper-lease.sh allocate
-    "toy-act-$INSTANCE_ID"`. It returns `INDEX`, `SSH_SESSION`, `TB_SESSION`, and
-    `TB_PORT`. Create both local tmux wrappers:
-
-    ```bash
-    tmux new-session -d -s "$SSH_SESSION" \
-      "ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-       -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-       -p $PORT root@$HOST"
-    tmux new-session -d -s "$TB_SESSION" \
-      "ssh -o UserKnownHostsFile=$KNOWN_HOSTS -o StrictHostKeyChecking=yes \
-       -o ConnectTimeout=15 -o ExitOnForwardFailure=yes \
-       -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N \
-       -L $TB_PORT:127.0.0.1:6006 -p $PORT root@$HOST"
-    ```
-
-    Verify both sessions exist and that `http://localhost:$TB_PORT/` responds;
-    print that URL. Stop before launching and report the relevant local tmux
-    output if either wrapper fails.
-16. Start the durable runner in a detached tmux session named `train` and wait
-    until it publishes readiness:
-
-    ```bash
-    tmux new-session -d -s train \
-      -e TRAIN_MODULE=scripts.train_v2 \
-      -e TRAIN_CONFIG="/workspace/toy-act/.vast-train/train-config.toml" \
-      'bash /workspace/toy-act/.pi/prompts/scripts/vast-train/runner.sh'
-    ```
-
-    The dataset path is read from the transferred train config on the instance,
-    so `TRAIN_DATASET` is not passed here; `runner.sh` still forwards it when
-    set to override the config. Poll for up to 30 seconds until
-    `/workspace/toy-act/.vast-train/state/run-status` reads `running`; require
-    the `train` session to survive an additional five-second window. A missing
-    tmux session is never a success signal; the persisted state files are
-    authoritative.
-17. Start the backup wrapper in a detached tmux session named `ckpt-bkp`. Refuse
-    to start if the session already exists. Launch it with
-    `CHECKPOINT_ROOT=checkpoints/act_v2` and `RUNS_ROOT=runs/act_v2` in the tmux
-    session environment so it discovers the v2 directories. Poll for up to ten
-    minutes for
-    `state/backup-running`, `state/backup-artifact-ready`, and
-    `state/backup-last-succeeded`; fail immediately if `state/backup-failed`
-    appears or `ckpt-bkp` exits. The wrapper discovers the single run directory,
-    then synchronizes `checkpoints/act_v2/<run>` and `runs/act_v2/<run>` to S3
-    every 120 seconds using `scripts/s3_backup.py`. Training writes immutable
-    periodic and final snapshots (`step_*.pt`), so every checkpoint is safe to
-    upload.
-    The same run directory holds TensorBoard training, rollout success, and
-    training/rollout throughput scalars.
-18. Hand off to a detached local watcher and stop babysitting. Copy the
-    committed `.pi/prompts/scripts/vast-train/local-watcher.sh` to
-    `$RUN_DIR/watcher.sh` and launch it with `setsid`/`nohup` so it survives the
-    pi session returning:
-
-    ```bash
-    cp .pi/prompts/scripts/vast-train/local-watcher.sh "$RUN_DIR/watcher.sh"
-    chmod +x "$RUN_DIR/watcher.sh"
-    setsid nohup bash "$RUN_DIR/watcher.sh" "$RUN_DIR" \
-      >"$RUN_DIR/watcher.out" 2>&1 </dev/null &
-    ```
-
-    The template sources `$RUN_DIR/setup.env` for the run-specific values and
-    owns step-7 cleanup plus the local `VAST_API_KEY`. Set `WATCHER_DRY_RUN=yes`
-    to rehearse the gate without destroying. It atomically writes its PID to
-    `watcher.pid`, invalidates any old `watcher.ready`, and publishes a fresh
-    acknowledgement only after observing training and arming the cleanup gate.
-    The acknowledgement binds the instance ID, PID, Linux process start ticks,
-    and observation timestamp. Missing or unwritable acknowledgement state
-    never permits handoff and must not change cleanup ownership.
-    The watcher must:
-    - record `RUN_STARTED=yes` only after it reads remote `state/run-status` as
-      `running`, and initialize `TERMINAL_CONFIRMED=no`;
-    - poll every 30 seconds; if SSH fails, log the failure, sleep, and retry
-      indefinitely without changing the run outcome or entering cleanup. Use a
-      fixed interval, so no failure counter is needed. A suspended local machine
-      freezes the watcher; after wake-up it must continue the same retry loop and
-      resume normal monitoring when SSH recovers;
-    - treat `vastai show instances` command failures, malformed output, and an
-      unavailable API as unknown state, never as proof that the instance or
-      training disappeared. Vast instance queries are diagnostic only after
-      `RUN_STARTED=yes` and cannot authorize cleanup;
-    - set `TERMINAL_CONFIRMED=yes` only after a successful SSH probe directly
-      reads remote `state/completed` or `state/failed`. Treat `completed` as
-      success and `failed` as a reported training failure;
-    - if the `train` tmux session is missing without either terminal marker,
-      log the inconsistency and continue polling for the runner to publish a
-      terminal marker. Do not infer training failure from the missing session;
-    - show concise progress from `.vast-train/logs/training.log` without
-      flooding;
-    - on success, wait for `state/backup-final-succeeded`, read the run name from
-      `state/run-name`, then verify locally through the workload profile that S3
-      contains every expected `step_*.pt` snapshot (multiples of
-      `CHECKPOINT_EVERY` up to `STEPS`, plus `STEPS` when it is not a multiple)
-      using `scripts/s3_backup.py has-files` with
-      `S3_CHECKPOINT_BASE=checkpoints/act_v2` and `--components checkpoints`;
-      also verify the run's recorded `config.json` reached S3 using `has-files`
-      with `S3_RUNS_BASE=runs/act_v2` and `--components runs`. Verify that the
-      uploaded TensorBoard event files contain the final rollout success and
-      throughput scalars;
-    - before every `vastai destroy`, enforce the cleanup gate again: setup may
-      destroy before `RUN_STARTED=yes`; after that point require
-      `TERMINAL_CONFIRMED=yes`. If the gate is closed, log that cleanup was
-      refused and leave the instance untouched. Apply this gate inside the EXIT
-      trap too, so normal `kill`, HUP, shell errors, and unexpected exits cannot
-      destroy an unconfirmed running job. Connectivity errors must remain in the
-      monitoring loop rather than reaching the EXIT trap;
-    - after an authorized destroy, verify the exact instance no longer appears
-      in `vastai show instances --raw`;
-    - write its PID to `.vast-train-local/toy-act-<INSTANCE_ID>/watcher.pid` and
-      write a report to `.vast-train-local/toy-act-<INSTANCE_ID>/report.txt`
-      recording the run name, S3 URI, elapsed time, selected offer price, pinned
-      commit, TensorBoard URL, and final cleanup status.
-19. Require the shared read-only handoff checker to succeed before claiming a
-    successful handoff:
-
-    ```bash
-    if uv run --frozen python .pi/prompts/scripts/vast-train/check-handoff.py \
-      "$RUN_DIR" --wait-seconds 90 > "$RUN_DIR/handoff.json"; then
-      HANDOFF_RC=0
-    else
-      HANDOFF_RC=$?
-    fi
-    ```
-
-    Inspect `handoff.json`. Exit 0 requires live remote training with no
-    terminal markers, a working local TensorBoard endpoint and forwarding
-    session, a live backup wrapper with `backup-running`,
-    `backup-artifact-ready`, and `backup-last-succeeded` (and no `backup-failed`),
-    plus a live watcher whose acknowledgement matches this instance and process.
-    Each SSH/HTTP probe is bounded and the 90-second wait has an overall
-    deadline. Exit 1 is not-ready/unknown, 2 is invalid configuration, and 3 is
-    remote terminal state. SSH failures cannot authorize cleanup.
-
-    On 1/2 or an outer command failure, report the unmet conditions and run
-    directory, stop new launches, and leave training and cleanup ownership with
-    the watcher. On 3, report terminal state and let the watcher finish backup
-    and cleanup; `ablate` must reconcile the watcher report and confirmed
-    removal before marking `done`/`failed`. Do not claim successful handoff,
-    mark a terminal run `running`, or destroy it from the pi session.
-
-20. After exit 0, report the run name, S3 URI, selected offer price, pinned commit, TensorBoard
-    URL, and the local run-state directory
-    `.vast-train-local/toy-act-<INSTANCE_ID>/` (log at `watcher.log`, report at
-    `report.txt`) to the user, then return without blocking on the training run.
-    Do not keep polling training progress in the pi session. When invoked from
-    the `ablate` driver, the driver starts the next combo as soon as this combo
-    satisfies the run gate and has been handed off. The driver must perform
-    its own fresh checker invocation before advancing; a saved JSON report
-    alone is not authorization.
-
-If setup fails before remote `run-status=running`, destroy the instance through
-the watcher cleanup (or directly when no watcher was started yet) and report the
-failure. If remote `state/failed` appears after training starts, the watcher sets
-`TERMINAL_CONFIRMED=yes`, waits briefly for the backup wrapper's best-effort
-final sync, preserves already uploaded checkpoints, reports the failure and S3
-prefix, and destroys the instance. Connectivity failures without a remote
-terminal marker remain in the monitoring loop and never authorize destruction.
-
-Because `VAST_API_KEY` is deliberately never placed on the instance, the
-instance cannot clean itself up. Local suspend pauses the watcher while remote
-training and backup continue; after wake-up, the watcher resumes polling and
-must recover through the SSH retry path. A reboot or hard-killed watcher cannot
-resume automatically and can leak the instance; in that case use `setup.env` to
-restart monitoring, or check `vastai show instances --raw` and destroy the
-labeled instance manually after verifying training state. The instance id and
-exact `INSTANCE_LABEL` are recoverable from
-`.vast-train-local/toy-act-<INSTANCE_ID>/setup.env` and `instance.json`.
-
-## Operational notes for the pi session
-
-Keep provisioning commands bounded so the pi session stays responsive. Wrap
-remote `ssh`/`scp` calls and polling loops in `timeout`, and never leave an
-unbounded foreground loop in the session; the detached watcher owns the long
-run, not the pi session.
-
-Do **not** wrap `local-wrapper-lease.sh allocate` in an outer `flock`. The
-script locks `/tmp/toy-act-local-wrapper.lock` internally, so an outer lock on
-the same file deadlocks the inner `flock` forever. Call it directly:
-
-```bash
-LEASE=$(timeout 30 .pi/prompts/scripts/vast-train/local-wrapper-lease.sh \
-  allocate "toy-act-$INSTANCE_ID")
-```
-
-Parse `vastai show instances --raw` with `jq`, not by splitting a
-pipe-joined string on whitespace. Several fields (notably `status_msg`, e.g.
-`success, status_msg=running`) contain spaces, so a `read` on a `|`-joined
-record silently misaligns fields and the poll never sees `running`. Emit one
-field at a time instead:
-
-```bash
-instance_field() {
-  local id="$1" field="$2"
-  vastai show instances --raw \
-    | jq -r --argjson id "$id" --arg field "$field" \
-        '.[] | select(.id==$id) | .[$field] // "null"'
-}
-
-for _ in $(seq 1 60); do
-  [ "$(instance_field "$INSTANCE_ID" actual_status)" = running ] && break
-  sleep 10
-done
-```
+After handoff, report config/run identity, instance ID, price, pinned SHA,
+TensorBoard URL, expected S3 prefixes and local log paths; return without polling
+training. On failure, report the relevant stage diagnostic and explicit resume
+command. Do not ask about unrelated historical runs, print secrets/presigned URLs,
+commit generated configs/state, or install pi-session cleanup traps.

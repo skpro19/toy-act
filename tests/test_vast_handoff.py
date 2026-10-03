@@ -29,7 +29,8 @@ class HandoffTest(unittest.TestCase):
             INSTANCE_ID="123", SSH_HOST="example.invalid", SSH_PORT="2222",
             TB_URL="http://localhost:6007/", TB_SESSION="act-tb-1")
         self.remote = {key: "yes" for key in handoff.REMOTE_KEYS}
-        self.remote.update(run_status="running", completed="no", failed="no", backup_failed="no")
+        self.remote.update(run_status="running", run_name="2026-01-01_00-00-00_fixture",
+                           completed="no", failed="no", backup_failed="no")
         self.commands = []
         self.ssh_error = None
         self.local_failure = None
@@ -64,7 +65,9 @@ class HandoffTest(unittest.TestCase):
         return report
 
     def test_all_conditions_pass(self) -> None:
-        self.assertEqual(self.check()["status"], "ready")
+        report = self.check()
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["run_name"], "2026-01-01_00-00-00_fixture")
         ssh = next(command for command in self.commands if command[0] == "ssh")
         self.assertIn("StrictHostKeyChecking=yes", ssh)
         self.assertIn("BatchMode=yes", ssh)
@@ -147,6 +150,39 @@ class HandoffTest(unittest.TestCase):
         setup.write_text(setup.read_text().replace("http://localhost:6007/", "http://example.invalid/"))
         with self.assertRaises(ValueError):
             handoff.load_setup(run_dir=self.run_dir, deadline=handoff.Deadline(seconds=5))
+
+    def test_conservative_watcher_cannot_destroy_before_observing_training(self) -> None:
+        bin_dir = self.run_dir / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "ssh").write_text("#!/bin/bash\nexit 1\n")
+        (bin_dir / "vastai").write_text(f"#!/bin/bash\ntouch '{self.run_dir / 'destroy-called'}'\n")
+        for path in bin_dir.iterdir():
+            path.chmod(0o755)
+        (self.run_dir / "setup.env").write_text(
+            "INSTANCE_ID=123\nINSTANCE_LABEL=test-instance\nSSH_HOST=example.invalid\n"
+            "SSH_PORT=2222\nSSH_KNOWN_HOSTS=\nCHECKPOINT_EVERY=10\nSTEPS=100\n"
+            "UV=/usr/bin/true\nWATCHER_ASSUME_STARTED=yes\nPOLL_SECONDS=0.02\n")
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", VAST_API_KEY="test-only")
+        process = subprocess.Popen(
+            ["bash", str(HELPER.with_name("local-watcher.sh")), str(self.run_dir)], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            end = time.monotonic() + 5
+            log_path = self.run_dir / "watcher.log"
+            while time.monotonic() < end:
+                if log_path.exists() and "ssh probe failed" in log_path.read_text():
+                    break
+                time.sleep(0.02)
+            self.assertIsNone(process.poll())
+            self.assertFalse((self.run_dir / "watcher.ready").exists())
+            process.terminate()
+            process.wait(timeout=5)
+            self.assertIn("cleanup refused", log_path.read_text())
+            self.assertFalse((self.run_dir / "destroy-called").exists())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
 
     def test_real_watcher_publishes_ack_only_after_arming_gate(self) -> None:
         bin_dir = self.run_dir / "bin"

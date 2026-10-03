@@ -25,6 +25,9 @@ set -o pipefail
 RUN_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 SETUP_ENV="$RUN_DIR/setup.env"
 test -f "$SETUP_ENV" || { echo "ERROR: missing $SETUP_ENV" >&2; exit 1; }
+# One watcher owns this instance, including across explicit driver resumes.
+exec 8>"$RUN_DIR/watcher.lock"
+flock -n 8 || { echo 'Watcher already owns this run' >&2; exit 1; }
 
 # shellcheck disable=SC1090
 set -a
@@ -81,7 +84,7 @@ if [ -z "${VAST_API_KEY:-}" ]; then
   VAST_API_KEY="$(cat "$HOME/.config/vastai/vast_api_key" 2>/dev/null || true)"
 fi
 if [ -z "${VAST_API_KEY:-}" ] && [ -f "$REPO/.env" ]; then
-  VAST_API_KEY="$(sed -n 's/^VAST_API_KEY=//p' "$REPO/.env" | head -n 1)"
+  VAST_API_KEY="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${VAST_API_KEY:-}"' watcher-key "$REPO/.env")"
 fi
 export VAST_API_KEY AWS_PROFILE AWS_REGION
 
@@ -100,7 +103,10 @@ S3_VERIFY=not_checked
 TB_VERIFY=not_checked
 CLEANUP_STATUS=not_run
 FINISHED=no
-RUN_STARTED=no
+# A driver records launch intent before contacting the instance. On recovery,
+# training may already have started even if this watcher has not observed it.
+RUN_STARTED="${WATCHER_ASSUME_STARTED:-no}"
+RUN_OBSERVED=no
 TERMINAL_CONFIRMED=no
 START_EPOCH=$(date +%s)
 
@@ -109,13 +115,14 @@ log() {
 }
 
 ssh_remote() {
-  ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "root@$SSH_HOST" "$@"
+  timeout --signal=TERM --kill-after=5s 45s \
+    ssh "${SSH_OPTS[@]}" -p "$SSH_PORT" "root@$SSH_HOST" "$@"
 }
 
 # Diagnostic only: exists/absent/unknown. Never authorizes cleanup by itself.
 instance_status() {
   local raw rc
-  raw=$(vastai show instances --raw 2>/dev/null)
+  raw=$(timeout --signal=TERM --kill-after=5s 45s vastai show instances --raw 2>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$raw" ]; then
     echo unknown
@@ -282,7 +289,7 @@ cleanup() {
   fi
 
   log "cleanup: destroying instance $INSTANCE_ID ($INSTANCE_LABEL)"
-  if vastai destroy instance "$INSTANCE_ID" -y >>"$LOG" 2>&1; then
+  if timeout --signal=TERM --kill-after=5s 60s vastai destroy instance "$INSTANCE_ID" -y >>"$LOG" 2>&1; then
     log "destroy command accepted"
   else
     log "destroy command returned non-zero"
@@ -306,10 +313,19 @@ cleanup() {
     CLEANUP_STATUS="destroy_unverified"
   fi
 
-  [ -n "$SSH_SESSION" ] && tmux kill-session -t "$SSH_SESSION" 2>/dev/null || true
-  [ -n "$TB_SESSION" ] && tmux kill-session -t "$TB_SESSION" 2>/dev/null || true
+  # After reboot /tmp leases can be reallocated to newer instances. Never kill
+  # or release their forwarding resources using this run's historical index.
   if [ -n "$OWNER_FILE" ]; then
-    exec 9>"$LOCK_FILE" && flock 9 && rm -f "$OWNER_FILE"
+    (
+      exec 9>"$LOCK_FILE" && flock 9 || exit 1
+      if [ -f "$OWNER_FILE" ] && [ "$(<"$OWNER_FILE")" = "toy-act-$INSTANCE_ID" ]; then
+        [ -n "$SSH_SESSION" ] && tmux kill-session -t "$SSH_SESSION" 2>/dev/null || true
+        [ -n "$TB_SESSION" ] && tmux kill-session -t "$TB_SESSION" 2>/dev/null || true
+        rm -f "$OWNER_FILE"
+      else
+        log 'local lease missing or owned by another run; forwarding resources left untouched'
+      fi
+    )
   fi
   log "cleanup result: $CLEANUP_STATUS"
 }
@@ -352,6 +368,11 @@ on_exit() {
     fi
     if wait_for_backup_final "$BACKUP_FINAL_TIMEOUT_SECONDS"; then
       log "observed backup-final-succeeded"
+      # Fast training can terminate before backup discovery publishes its name.
+      remote_rn=$(ssh_remote "cat $REMOTE_STATE/run-name 2>/dev/null" 2>/dev/null)
+      if [ -n "$remote_rn" ]; then
+        RUN_NAME="$remote_rn"
+      fi
       if [ -n "$RUN_NAME" ]; then
         verify_s3 "$RUN_NAME" || true
         verify_tb_scalars "$RUN_NAME" || true
@@ -458,11 +479,12 @@ while true; do
     break
   fi
 
-  if [ "$RUN_STARTED" != yes ] && [ "$RUN_STATUS" = running ]; then
+  if [ "$RUN_OBSERVED" != yes ] && [ "$RUN_STATUS" = running ]; then
     RUN_STARTED=yes
+    RUN_OBSERVED=yes
     log "run-status=running observed; cleanup gate armed (requires terminal marker)"
   fi
-  if [ "$RUN_STARTED" = yes ] && [ ! -f "$READY_FILE" ]; then
+  if [ "$RUN_OBSERVED" = yes ] && [ ! -f "$READY_FILE" ]; then
     # Publish only after the cleanup gate is armed. A failed write must not
     # exit the watcher or change its ownership; retry on the next probe.
     if {

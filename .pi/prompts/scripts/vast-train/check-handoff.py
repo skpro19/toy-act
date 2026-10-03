@@ -24,7 +24,7 @@ SETUP_KEYS = (
     "TRAIN_SESSION", "REPO",
 )
 REMOTE_KEYS = (
-    "run_status", "completed", "failed", "train_session", "backup_session",
+    "run_status", "run_name", "completed", "failed", "train_session", "backup_session",
     "backup_running", "backup_artifact_ready", "backup_last_succeeded", "backup_failed",
 )
 
@@ -135,6 +135,7 @@ def check_once(*, run_dir: Path, config: dict[str, str], deadline: Deadline) -> 
     train = config["TRAIN_SESSION"] or "train"
     remote_command = f"cd {shlex.quote(state)} || exit 3\n"
     remote_command += "printf 'run_status=%s\\n' \"$(cat run-status 2>/dev/null)\"\n"
+    remote_command += "printf 'run_name=%s\\n' \"$(cat run-name 2>/dev/null)\"\n"
     for key, marker in (
         ("completed", "completed"), ("failed", "failed"),
         ("backup_running", "backup-running"), ("backup_artifact_ready", "backup-artifact-ready"),
@@ -152,7 +153,7 @@ def check_once(*, run_dir: Path, config: dict[str, str], deadline: Deadline) -> 
         remote = dict(line.split("=", 1) for line in lines)
         if result.returncode or len(lines) != len(REMOTE_KEYS) or set(remote) != set(REMOTE_KEYS):
             raise ValueError("Incomplete remote probe")
-        if any(remote[key] not in ("yes", "no") for key in REMOTE_KEYS if key != "run_status"):
+        if any(remote[key] not in ("yes", "no") for key in REMOTE_KEYS if key not in ("run_status", "run_name")):
             raise ValueError("Malformed remote probe")
     except (OSError, ValueError, subprocess.TimeoutExpired):
         checks["remote"] = condition(status="unknown", detail="SSH failed, timed out, or returned incomplete state")
@@ -170,7 +171,8 @@ def check_once(*, run_dir: Path, config: dict[str, str], deadline: Deadline) -> 
     for key in ("backup_session", "backup_running", "backup_artifact_ready", "backup_last_succeeded"):
         checks[key] = condition(status="passed" if remote[key] == "yes" else "pending", detail=f"Require {key}")
     ready = all(check["status"] == "passed" for check in checks.values())
-    return {"status": "terminal" if terminal else "ready" if ready else "not_ready", "checks": checks}
+    return {"status": "terminal" if terminal else "ready" if ready else "not_ready",
+            "run_name": remote["run_name"], "checks": checks}
 
 
 def main() -> int:

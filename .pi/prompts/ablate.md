@@ -1,167 +1,105 @@
 ---
-description: Run a config sweep on Vast.ai, one instance per combo
-argument-hint: "<sweep-spec>"
+description: Run a fresh, logged Vast.ai sweep; explicitly resume an iteration
+argument-hint: "<sweep-spec> [--plan] [--resume <iteration-id>]"
 ---
 
-Run every combination in a sweep spec, each in its own freshly provisioned
-Vast.ai instance, by delegating to `.pi/prompts/vast-train-actv2.md`. Combos
-are provisioned one at a time, but their training runs overlap: the next combo
-starts as soon as the previous has been handed off to its detached watcher (see
-"Run gate" below). Generated configs are local only and are never committed.
+Run an ACT v2 sweep using the committed driver:
+`.pi/prompts/scripts/vast-train/workflow.py`.
+Read this file and `vast-train-actv2.md` before execution. Do not reconstruct
+provisioning, state updates, or cleanup through ad hoc shell commands.
 
-## Inputs
+## Inputs and invocation
 
-- `SWEEP_SPEC` = `${1:-}` — required. If it is empty, stop and ask the user for a
-  sweep spec path before doing anything else.
+User arguments: `$ARGUMENTS`.
 
-## Mandatory Git preflight and sweep revision
-
-Before resolving the sweep or running local project Python, run the shared
-preflight used by `vast-train-actv2.md`:
-
-```bash
-SWEEP_NAME="$(basename "$SWEEP_SPEC" .toml)"
-SWEEP_COMMIT_FILE=".vast-train-local/ablate-${SWEEP_NAME}.commit"
-SWEEP_STATE_FILE=".vast-train-local/ablate-${SWEEP_NAME}.state"
-PREFLIGHT_ARGS=()
-if [ -f "$SWEEP_COMMIT_FILE" ]; then
-  SWEEP_GIT_COMMIT=$(<"$SWEEP_COMMIT_FILE")
-  [[ "$SWEEP_GIT_COMMIT" =~ ^[0-9a-f]{40,64}$ ]] \
-    || { echo 'Invalid persisted sweep SHA; stop.' >&2; exit 1; }
-  PREFLIGHT_ARGS+=(--expected-commit "$SWEEP_GIT_COMMIT")
-elif [ -e "$SWEEP_STATE_FILE" ]; then
-  echo 'Existing sweep state has no pinned SHA; stop rather than guess.' >&2
-  exit 1
-fi
-SWEEP_GIT_COMMIT=$(timeout 120 bash .pi/prompts/scripts/vast-train/git-preflight.sh \
-  "${PREFLIGHT_ARGS[@]}") \
-  || { echo 'Git preflight failed; stop the sweep.' >&2; exit 1; }
-if [ ! -f "$SWEEP_COMMIT_FILE" ]; then
-  mkdir -p .vast-train-local
-  (set -o noclobber; printf '%s\n' "$SWEEP_GIT_COMMIT" > "$SWEEP_COMMIT_FILE") \
-    || { echo 'Sweep revision already claimed; stop this invocation.' >&2; exit 1; }
-fi
-```
-
-Require a clean `act-v2` checkout matching the current anonymous GitHub branch.
-Ignored local configs and run state are allowed; staged changes, unstaged
-tracked changes, non-ignored untracked files, wrong branches, detached HEAD,
-and ahead/behind/diverged histories are errors. Remote failures are fatal.
-Do not automatically stash, commit, push, pull, reset, or switch branches.
-
-Persist `SWEEP_GIT_COMMIT` in
-`.vast-train-local/ablate-${SWEEP_NAME}.commit` alongside the state file before
-launching any combos. On resume, load that existing SHA instead of replacing
-it with the current branch tip, and require the preflight to succeed with
-`--expected-commit "$SWEEP_GIT_COMMIT"` before resolving configs. If an existing
-state file has no recorded SHA, stop and report; do not guess its revision.
-Use a new sweep name/state for an intentionally different code revision.
-
-Keep this SHA unchanged for the entire sweep. Every combo's training workflow
-must receive `SWEEP_GIT_COMMIT` and recheck it before config resolution and
-provisioning. A changed checkout or remote branch stops additional launches;
-existing runs and watchers remain untouched.
-
-## Run gate
-
-A combo is **ready to hand off**, and therefore releases the loop to start the
-next combo, only when all of the following are true for that combo:
-
-- remote `state/run-status` reads `running`, the `train` session exists, and
-  neither `completed` nor `failed` exists;
-- the recorded local TensorBoard URL responds and its forwarding session exists;
-- the `ckpt-bkp` session exists, `backup-running`, `backup-artifact-ready`, and
-  `backup-last-succeeded` exist, and `backup-failed` does not;
-- the watcher is alive and its atomic `watcher.ready` acknowledgement matches
-  this instance, PID, and Linux process start ticks. It publishes this only
-  after observing training and arming its cleanup gate.
-
-The authoritative read-only checker is
-`.pi/prompts/scripts/vast-train/check-handoff.py`. After the delegated workflow
-returns, perform a fresh check for its recorded run directory:
+- Require an explicit sweep spec path unless `--resume <iteration-id-or-dir>`
+  is supplied. Ask only if a required input is missing; never guess a config.
+- Parse the spec path, optional `--plan`, and optional `--resume`; reject other
+  arguments. Pass paths as quoted arguments, not interpolated shell programs.
+- A normal invocation **always creates a new iteration**, even for identical
+  configs. Never search for old `.state`/`.commit` files, reuse an older
+  iteration implicitly, or ask about completed/interrupted historical runs.
+- `--resume` continues only the specified iteration, using its saved configs
+  and pinned SHA. The source spec may have changed; it is not resolved again.
+- `--plan` creates immutable configs/state but performs no Vast/AWS operations.
+  Use the printed iteration ID with `--resume` to launch that saved plan.
 
 ```bash
-uv run --frozen python .pi/prompts/scripts/vast-train/check-handoff.py "$RUN_DIR"
-HANDOFF_RC=$?
+uv run --frozen python .pi/prompts/scripts/vast-train/workflow.py \
+  --spec "$SWEEP_SPEC"
+# Add --plan for a local plan, or --resume "$ITERATION_ID" for explicit recovery.
+# Resume without an original spec: workflow.py --resume "$ITERATION_ID"
 ```
 
-Capture the exit status explicitly (use an `if` or temporarily disable `errexit`
-if needed). Only exit **0** permits marking the combo `running` and moving on.
-Exit **1** means not ready/unknown, **2** means invalid configuration, and **3**
-means a remote terminal marker was observed. Output is JSON with per-condition
-`passed`, `pending`, `failed`, or `unknown` results. No check can authorize
-cleanup. On 1/2, stop new launches and report; do not re-provision the same
-combo. On 3, reconcile via the watcher's report and confirmed instance removal
-before marking `done`/`failed`; stop and report if reconciliation is incomplete.
-Never mark a terminal run `running` or bypass the watcher.
+The driver performs Git preflight before resolving project configs, then
+rechecks the pinned revision before provisioning/setup/launch. Require a clean,
+anonymously synchronized `act-v2` checkout. Never automatically stash, commit,
+push, pull, reset, switch branches, or bypass a failed check.
 
-## Workflow
+## Execution contract
 
-1. Set `SWEEP_NAME="$(basename "$SWEEP_SPEC" .toml)"`, perform the mandatory Git
-   preflight (honoring any persisted sweep revision), then resolve the sweep
-   into self-contained configs:
+The driver, not the agent, owns:
 
-   ```bash
-   SWEEP_NAME="$(basename "$SWEEP_SPEC" .toml)"
-   RESOLVE_DIR=".vast-train-local/ablate-${SWEEP_NAME}"
-   uv run python -m scripts.ablate --spec "$SWEEP_SPEC" --resolve-dir "$RESOLVE_DIR"
-   ```
+- unique iteration IDs, immutable input/config snapshots and their hashes,
+  an ordered manifest (no directory glob), and iteration-specific run names;
+- a nonblocking iteration lock and atomic/fsynced state updates;
+- durable create intent and exact instance labels **before** create requests;
+  ambiguous requests reconcile on resume, never blindly create replacements;
+- one provisional rental at a time, up to three supported offers per combo,
+  hardware/network gates, bounded remote setup and dataset validation;
+- run-directory recording, local wrapper leases, conservative detached watcher
+  startup, service launch and handoff;
+- a fresh shared `check-handoff.py` exit-0 check, followed by an independent
+  fresh check, before advancing to the next combo;
+- reconciliation of this iteration only. Training outcome, artifact verification,
+  and verified removal are recorded separately. Historical iterations cannot
+  block a fresh invocation.
 
-   This writes one `<slug>.toml` per combo, each containing the full effective
-   config and `name = <slug>`.
+Training overlaps across combos; each instance has its own watcher. The driver
+returns after handoff rather than waiting for training completion. Live watchers
+finish reports independently; `summary.txt` is a driver-time snapshot, refreshed
+on explicit resume, not a continuously updated dashboard.
 
-2. Build the ordered config list:
+## Safety and failures
 
-   ```bash
-   mapfile -t CONFIGS < <(ls -1 "$RESOLVE_DIR"/*.toml | sort)
-   ```
+- Preserve `vast-train-actv2.md`'s hardware, price, Git and cleanup policies.
+  Never weaken filters without asking.
+- Provisioning failures may remove only exact, provisional instances **before**
+  training launch intent. Removal must be verified by a successful, valid API
+  response before a replacement is rented.
+- Once launch intent is recorded, only the detached watcher owns cleanup.
+  It requires a directly observed remote terminal marker, including on restart
+  and in its EXIT trap. SSH/API failures, interruption, or missing tmux sessions
+  never authorize destruction.
+- A resume may restart a dead saved watcher and restore local forwarding. It
+  does not rerun terminal training or rent replacements for uncertain attempts.
+- Checker exit 1/2 blocks new launches; exit 3 requires a watcher report plus
+  confirmed removal before terminal reconciliation. Do not mark terminal runs
+  `running`, erase state, or bypass the gate to make the loop advance.
+- Driver exit 0 means handed off/reconciled (or planned), not training success;
+  1 means blocked, 2 invalid CLI input, 130 interrupted. A blocked/interrupted
+  iteration is recoverable through explicit resume. A new invocation remains
+  independent. Never perform global old-run cleanup.
 
-3. Maintain a state file `.vast-train-local/ablate-${SWEEP_NAME}.state` with one
-   line per config: `STATUS <path> [run_dir]` where `STATUS` is one of:
+## Logging and response
 
-   - `pending` — not started yet;
-   - `awaiting_handoff <run_dir>` — instance provisioned, but handoff has not
-     passed; record its run directory as soon as it exists, before checking the
-     gate. Never provision a duplicate instance for this combo on resume;
-   - `running <run_dir>` — handed off to its watcher (satisfies the run gate);
-     `<run_dir>` is the `.vast-train-local/toy-act-<INSTANCE_ID>/` directory
-     recorded at handoff, and the instance is still active;
-   - `done` — watcher reported a terminal state and the instance is gone;
-   - `failed` — watcher reported a training or setup failure;
-   - `stalled` — watcher died with no terminal marker (report; never destroy).
+All records are ignored and local:
+`.vast-train-local/ablations/<spec-name>/<iteration-id>/` contains
+`manifest.json`, `state.json`, `inputs/`, `configs/`, `events.jsonl`,
+`driver.log`, `preflight.log`, `resolution.log`, `combos/`, and `summary.txt`.
+Per-instance `.vast-train-local/toy-act-<ID>/` contains setup logs, pinned host
+keys, sensitive mode-600 `instance.json`, `dataset.json`, hashed setup/watcher
+snapshots, watcher output/log, `handoff.json`, and final `report.txt`. Interrupted
+nonterminal watcher reports are preserved in `report-history/` before recovery.
 
-4. Reconcile the state file before starting each combo: for every `running`
-   or `awaiting_handoff` line, inspect its recorded `run_dir`. If `report.txt` exists and the
-   instance is gone, mark the line `done` or `failed`. If the watcher is dead
-   with no terminal marker, mark it `stalled` and stop to report — never
-   destroy an instance here. For a nonterminal `awaiting_handoff` run, recheck
-   the gate on that same instance; promote it to `running` only on exit 0.
-   Otherwise stop new launches and report, rather than creating a replacement.
+Keep the foreground driver bounded with a timeout appropriate to setup/dataset
+size; TERM records an interruption and never cleans up live runs. If interrupted,
+report the iteration ID and resume command; do not restart the whole command as
+an implicit retry. No reboot supervision is installed: resume explicitly after
+a reboot to recover this iteration's watchers.
 
-5. For each `pending` config, in order:
-
-   - Set `CONFIG_PATH=<path>` and pass the unchanged `SWEEP_GIT_COMMIT`.
-   - Require the delegated Git preflight to succeed with that expected SHA.
-     If it fails, stop the sweep, leave this and later combos `pending`, report
-     the reason, and leave all previously launched runs and watchers untouched.
-   - Follow `.pi/prompts/vast-train-actv2.md` for that single config. It will
-     use the pre-set `CONFIG_PATH`, skip its interactive picker, and provision
-     a fresh instance.
-   - Record `awaiting_handoff <run_dir>` as soon as the instance run directory
-     exists. After the workflow returns, invoke the shared checker above. Only
-     exit 0 permits marking the line `running <run_dir>`; otherwise follow the
-     failure/terminal handling above and stop new launches.
-   - Start the next `pending` config immediately; the current combo's watcher
-     owns its run and cleanup from here on.
-   - Never destroy an instance here: each run's watcher owns cleanup.
-
-6. When the loop finishes or is interrupted, report per-combo status from the
-   state file and any remaining `pending` or `stalled` configs.
-
-## Constraints
-
-- Provision one instance at a time; training runs may overlap across combos,
-  each with its own instance and watcher.
-- Reuse the vast-train cleanup gates unchanged; never bypass the watcher.
-- Do not commit or push generated configs.
-- Never mix code revisions within a sweep or bypass a failed Git preflight.
+Report one concise table with combo status, instance ID and TensorBoard URL,
+then the iteration directory, logs and explicit resume command if needed. For
+failures, include the relevant local diagnostic path. Do not repeatedly ask
+about old runs or poll training after handoff. Never print credentials, presigned
+URLs or raw sensitive instance records; never commit generated state/configs.

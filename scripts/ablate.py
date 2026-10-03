@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import itertools
+import json
 import subprocess
 from pathlib import Path
 
@@ -192,7 +193,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="write one resolved self-contained TOML per combo into this directory",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--manifest", type=Path,
+        help="write the ordered resolved config paths as JSON (requires --resolve-dir)",
+    )
+    args = parser.parse_args()
+    if args.manifest is not None and args.resolve_dir is None:
+        parser.error("--manifest requires --resolve-dir")
+    return args
 
 
 def main() -> None:
@@ -208,8 +216,12 @@ def main() -> None:
             print(f"wrote {path}")
 
     if args.resolve_dir is not None:
-        for path in write_resolved(plan=plan, resolve_dir=args.resolve_dir):
+        resolved = write_resolved(plan=plan, resolve_dir=args.resolve_dir)
+        for path in resolved:
             print(f"resolved {path}")
+        if args.manifest is not None:
+            args.manifest.parent.mkdir(parents=True, exist_ok=True)
+            args.manifest.write_text(json.dumps([str(path.resolve()) for path in resolved], indent=2) + "\n")
 
     if not (args.materialize or args.exec or args.resolve_dir):
         print_plan(plan=plan)
