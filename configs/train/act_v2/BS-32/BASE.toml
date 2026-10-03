@@ -26,3 +26,8 @@ ranges = false
 sensitivity = false
 throughput = true
 timing = true
+
+[rollout]
+episodes = 30
+horizon = 250
+seed = 0

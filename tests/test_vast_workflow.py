@@ -229,7 +229,8 @@ class IterationTests(LocalFixture):
             'version = "v4"\naction_loss = "l1"\nbatch_size = 8\nsteps = 10\n'
             'image_keys = ["agentview_image", "robot0_eye_in_hand_image"]\n'
             'dataset = "datasets/test.hdf5"\nlr = 0.0001\nseed = 0\nbeta = 0.01\n'
-            'checkpoint_every = 5\n[tensorboard]\n')
+            'checkpoint_every = 5\n[tensorboard]\n'
+            '[rollout]\nepisodes = 30\nhorizon = 250\nseed = 0\n')
         self.source.write_text(f'group = "{group}"\n[grid]\nseed = [2, 1]\n')
         with patch.object(iteration, "git_preflight", return_value=COMMIT), \
                 patch.object(common, "instances", side_effect=AssertionError("Cloud access in plan")):

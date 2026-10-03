@@ -66,6 +66,9 @@ class CheckpointEvaluationTest(unittest.TestCase):
                             namespace: True
                             for namespace in train_v2.TENSORBOARD_NAMESPACES
                         },
+                        episodes=30,
+                        horizon=250,
+                        seed=0,
                     )
 
             events = EventAccumulator(directory)
@@ -97,6 +100,7 @@ class DatasetResolutionTest(unittest.TestCase):
             "beta": 0.01,
             "checkpoint_every": 2000,
             "tensorboard": {},
+            "rollout": {"episodes": 30, "horizon": 250, "seed": 0},
         }
 
     def test_resolve_dataset_prefers_cli_then_config(self) -> None:
@@ -130,16 +134,60 @@ class DatasetResolutionTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     train_v2.validate_config(config=config)
 
-    def test_dataset_is_excluded_from_run_name(self) -> None:
-        config_without_dataset = self.base_config()
-        del config_without_dataset["dataset"]
-        config_with_dataset = self.base_config()
+    def test_dataset_is_encoded_in_run_name(self) -> None:
+        config = self.base_config()
+        config["dataset"] = "datasets/can/ph_mh_better/example.hdf5"
 
-        run_name = train_v2.make_run_name(config=config_without_dataset)
-        run_name_with_dataset = train_v2.make_run_name(config=config_with_dataset)
+        slug = train_v2.make_run_slug(config=config)
 
-        self.assertEqual(run_name.split("_", 1)[1], run_name_with_dataset.split("_", 1)[1])
-        self.assertNotIn("dataset", run_name_with_dataset)
+        self.assertIn("ds_ph_mh_better_example", slug)
+
+    def test_run_name_fields_take_precedence_over_omit_keys(self) -> None:
+        config = self.base_config()
+        fields = train_v2.RUN_NAME_FIELDS + (("checkpoint_every", "ce", "{:d}"),)
+
+        with patch.object(train_v2, "RUN_NAME_FIELDS", fields):
+            slug = train_v2.make_run_slug(config=config)
+
+        # checkpoint_every is in RUN_NAME_OMIT_KEYS but also in RUN_NAME_FIELDS,
+        # so the field list wins and it must still appear in the slug.
+        self.assertIn("ce2000", slug)
+
+    def test_validate_config_requires_rollout_section(self) -> None:
+        config = self.base_config()
+        del config["rollout"]
+
+        with self.assertRaises(KeyError):
+            train_v2.validate_config(config=config)
+
+    def test_validate_config_rejects_unknown_rollout_key(self) -> None:
+        config = self.base_config()
+        config["rollout"]["episodes_per_checkpoint"] = 5
+
+        with self.assertRaises(ValueError):
+            train_v2.validate_config(config=config)
+
+    def test_validate_config_rejects_invalid_rollout_values(self) -> None:
+        cases = {
+            "episodes": [0, -1, 1.5, True],
+            "horizon": [0, -1, 1.5, True],
+            "seed": [-1, 1.5, True],
+        }
+        for key, bad_values in cases.items():
+            for bad_value in bad_values:
+                with self.subTest(key=key, value=bad_value):
+                    config = self.base_config()
+                    config["rollout"][key] = bad_value
+                    with self.assertRaises(ValueError):
+                        train_v2.validate_config(config=config)
+
+    def test_rollout_is_excluded_from_run_name(self) -> None:
+        config = self.base_config()
+        config["rollout"] = {"episodes": 5, "horizon": 50, "seed": 7}
+
+        run_name = train_v2.make_run_name(config=config)
+
+        self.assertNotIn("rollout", run_name)
 
 
 if __name__ == "__main__":

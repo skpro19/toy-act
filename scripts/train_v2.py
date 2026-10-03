@@ -54,9 +54,6 @@ RUNS_ROOT = Path("runs/act_v2")
 CHECKPOINTS_ROOT = Path("checkpoints/act_v2")
 SENSITIVITY_PROBE_SIZE = 16
 CONFIG_VERSION = "v4"
-EVAL_EPISODES = 30
-EVAL_HORIZON = 250
-EVAL_SEED = 0
 DATALOADER_NUM_WORKERS = 4
 DATALOADER_TIMEOUT_SECONDS = 120
 
@@ -71,7 +68,14 @@ CONFIG_KEYS = (
     "beta",
     "checkpoint_every",
     "tensorboard",
+    "rollout",
     "version",
+)
+
+ROLLOUT_KEYS = (
+    "episodes",
+    "horizon",
+    "seed",
 )
 
 TENSORBOARD_NAMESPACES = (
@@ -117,6 +121,7 @@ RUN_NAME_OMIT_KEYS = frozenset({
     "checkpoint_every",
     "beta_start",
     "tensorboard",
+    "rollout",
     "version",
     "base_config",
     "description",
@@ -184,8 +189,45 @@ def validate_config(*, config: dict) -> dict:
     config["tensorboard"] = validate_tensorboard_flags(
         tensorboard=config["tensorboard"],
     )
+    config["rollout"] = validate_rollout_flags(
+        rollout=config["rollout"],
+    )
 
     return config
+
+
+def validate_rollout_flags(*, rollout: dict) -> dict:
+    if not isinstance(rollout, dict):
+        raise ValueError("rollout must be a table with episodes, horizon, and seed")
+
+    missing = [key for key in ROLLOUT_KEYS if key not in rollout]
+    if missing:
+        raise KeyError(f"rollout missing required keys: {missing}")
+
+    unknown = sorted(set(rollout) - set(ROLLOUT_KEYS))
+    if unknown:
+        allowed = ", ".join(ROLLOUT_KEYS)
+        raise ValueError(
+            f"unknown rollout keys {unknown}; allowed keys: {allowed}"
+        )
+
+    episodes = rollout["episodes"]
+    if not isinstance(episodes, int) or isinstance(episodes, bool) or episodes <= 0:
+        raise ValueError(f"rollout.episodes must be > 0, got {episodes!r}")
+
+    horizon = rollout["horizon"]
+    if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon <= 0:
+        raise ValueError(f"rollout.horizon must be > 0, got {horizon!r}")
+
+    seed = rollout["seed"]
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
+        raise ValueError(f"rollout.seed must be >= 0, got {seed!r}")
+
+    return {
+        "episodes": episodes,
+        "horizon": horizon,
+        "seed": seed,
+    }
 
 
 def validate_tensorboard_flags(*, tensorboard: dict) -> dict:
@@ -491,7 +533,10 @@ def evaluate_and_log_checkpoint(
     train_steps: int,
     train_samples: int,
     checkpoint_seconds: float,
-    tensorboard: dict) -> Any:
+    tensorboard: dict,
+    episodes: int,
+    horizon: int,
+    seed: int) -> Any:
     """Evaluate a saved model without changing the training RNG or model mode."""
     run_eval = tensorboard["eval"]
     summary = None
@@ -520,15 +565,15 @@ def evaluate_and_log_checkpoint(
             model.eval()
             rollouts = []
             with torch.inference_mode():
-                for episode_idx in range(EVAL_EPISODES):
-                    np.random.seed(EVAL_SEED + episode_idx)
+                for episode_idx in range(episodes):
+                    np.random.seed(seed + episode_idx)
                     rollouts.append(run_rollout(
                         model=model,
                         env=env,
                         device=device,
                         normalization=normalization,
                         image_keys=image_keys,
-                        horizon=EVAL_HORIZON,
+                        horizon=horizon,
                         terminate_on_success=True,
                         render=False,
                         video_writer=None,
@@ -558,7 +603,7 @@ def evaluate_and_log_checkpoint(
                 "throughput/rollout_env_steps_per_sec", env_steps / rollout_seconds, global_step,
             )
             writer.add_scalar(
-                "throughput/rollout_episodes_per_min", EVAL_EPISODES * 60 / rollout_seconds,
+                "throughput/rollout_episodes_per_min", episodes * 60 / rollout_seconds,
                 global_step,
             )
 
@@ -571,7 +616,7 @@ def evaluate_and_log_checkpoint(
     writer.flush()
     if run_eval:
         print(
-            f"step {global_step}: rollout success={summary['num_success']}/{EVAL_EPISODES} "
+            f"step {global_step}: rollout success={summary['num_success']}/{episodes} "
             f"return={summary['return_mean']:.3f} elapsed={rollout_seconds:.1f}s"
         )
     return env
@@ -683,7 +728,11 @@ def train(
         print(f"beta => {beta:g}")
     print(f"target_steps => {target_steps}")
     print(f"checkpoint_every => {checkpoint_every} steps")
-    print(f"rollout evaluation => {EVAL_EPISODES} episodes, horizon {EVAL_HORIZON}")
+    rollout = config["rollout"]
+    print(
+        f"rollout evaluation => {rollout['episodes']} episodes, "
+        f"horizon {rollout['horizon']}"
+    )
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
     enabled_namespaces = [
@@ -871,6 +920,9 @@ def train(
                     train_samples=train_samples,
                     checkpoint_seconds=checkpoint_seconds,
                     tensorboard=tensorboard,
+                    episodes=rollout["episodes"],
+                    horizon=rollout["horizon"],
+                    seed=rollout["seed"],
                 )
                 last_evaluated_step = global_step
                 train_samples = 0
@@ -947,6 +999,9 @@ def train(
             train_samples=train_samples,
             checkpoint_seconds=time.monotonic() - checkpoint_started,
             tensorboard=tensorboard,
+            episodes=rollout["episodes"],
+            horizon=rollout["horizon"],
+            seed=rollout["seed"],
         )
 
     if eval_env is not None:
