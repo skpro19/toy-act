@@ -7,7 +7,10 @@ from pathlib import Path
 import re
 
 
-def cpu_rank(model: str) -> int | None:
+def cpu_rank(model: object) -> int | None:
+    # Missing or malformed offer data fails closed: an unrankable CPU is skipped.
+    if not isinstance(model, str):
+        return None
     model = model.upper()
     families = (
         r"EPYC\s+9[0-9A-Z]{2}5", r"EPYC\s+9[0-9A-Z]{2}4",
