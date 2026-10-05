@@ -41,6 +41,8 @@ class ACTV2(nn.Module):
         self.proprio_dims = proprio_dims
         self.k = action_chunk_size
         
+        # Keep CVAE modules registered even when use_z=False so checkpoints
+        # retain the same parameter keys in both modes.
         self.cvae_encoder = CVAEEncoder(d_model=self.d_model, 
                                         nhead=self.nhead, 
                                         num_layers=self.num_layers, 
@@ -131,11 +133,13 @@ class ACTV2(nn.Module):
         proprio_tokens = self.proprio_encoder(proprio)
         img_tokens = self.image_encoder(img)
 
-        # mu, log(sigma-squared)
-        mu, log_sigma_x2 = self.posterior(proprio=proprio, actions=actions)
-
+        mu = None
+        log_sigma_x2 = None
         z = None
         if self.use_z:
+            mu, log_sigma_x2 = self.posterior(
+                proprio=proprio, actions=actions,
+            )
             z = mu + torch.randn_like(mu) * torch.sqrt(torch.exp(log_sigma_x2))
 
         actions = self.decode_from_tokens(

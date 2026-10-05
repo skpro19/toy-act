@@ -409,6 +409,9 @@ def register_activation_norm_hooks(*, model: ACTV2) -> tuple[dict[str, float], l
         "transformer_decoder": model.transformer_decoder,
         "action_head": model.action_head,
     }
+    if not model.use_z:
+        del hook_targets["cvae_encoder"]
+
     handles = []
     for tag, module in hook_targets.items():
         def make_hook(name: str):
@@ -435,6 +438,22 @@ def get_kl_loss(
     kl_loss = 0.5 * (sum_mu_x2 + sum_sigma_x2 - d - sum_log_sigma_x2)
 
     return kl_loss.mean()
+
+
+def get_training_loss(
+    *,
+    action_loss: torch.Tensor,
+    mu: torch.Tensor | None,
+    log_sigma_x2: torch.Tensor | None,
+    use_z: bool,
+    beta: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return total loss and KL, excluding the CVAE objective when disabled."""
+    if not use_z:
+        return action_loss, action_loss.new_zeros(())
+    if mu is None or log_sigma_x2 is None:
+        raise ValueError("posterior outputs are required when use_z is True")
+    kl_loss = get_kl_loss(mu=mu, log_sigma_x2=log_sigma_x2)
+    return action_loss + beta * kl_loss, kl_loss
 
 
 def measure_observation_sensitivity(
@@ -636,7 +655,7 @@ def train(
     log_denorm_l1 = tensorboard["denorm_l1"]
     log_epoch_metrics = tensorboard["epoch_metrics"]
     log_hyperparams = tensorboard["hyperparams"]
-    log_latent = tensorboard["latent"]
+    log_latent = tensorboard["latent"] and config["use_z"]
     log_lr = tensorboard["lr"]
     log_optimizer = tensorboard["optimizer"]
     log_ranges = tensorboard["ranges"]
@@ -775,8 +794,13 @@ def train(
             pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
 
             action_loss = action_loss_fn(pred_actions, actions)
-            kl_loss = get_kl_loss(mu=mu, log_sigma_x2=log_sigma_x2)
-            loss = action_loss + beta_t * kl_loss
+            loss, kl_loss = get_training_loss(
+                action_loss=action_loss,
+                mu=mu,
+                log_sigma_x2=log_sigma_x2,
+                use_z=model.use_z,
+                beta=beta_t,
+            )
 
             loss.backward()
             if log_optimizer:
@@ -878,6 +902,8 @@ def train(
                 writer.add_scalar("latent/sigma_mean", sigma_mean, global_step)
             if log_activations:
                 for tag in ACTIVATION_HOOK_TAGS:
+                    if tag == "cvae_encoder" and not model.use_z:
+                        continue
                     writer.add_scalar(
                         f"activations/{tag}",
                         activation_norms[tag],
