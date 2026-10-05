@@ -13,6 +13,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -22,6 +23,7 @@ PROFILE = "toy-pickplace-backup"
 REGION = "ap-south-1"
 IMAGE = "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime"
 MAX_PRICE = 0.80
+HEARTBEAT_SECONDS = 30
 
 
 class Blocked(RuntimeError):
@@ -106,7 +108,8 @@ def lock(path: Path) -> Iterator[None]:
 
 
 def capture_command(*, args: list[str], timeout: float, input_text: str | None,
-                    env: dict | None, on_output: Callable[[str], None] | None) -> subprocess.CompletedProcess:
+                    env: dict | None, on_output: Callable[[str], None] | None,
+                    on_heartbeat: Callable[[], None] | None = None) -> subprocess.CompletedProcess:
     """Stream complete lines safely, while retaining separate parseable outputs.
 
     Anonymous mode-600 temporary files avoid pipe deadlocks and keep sensitive
@@ -122,6 +125,7 @@ def capture_command(*, args: list[str], timeout: float, input_text: str | None,
                     "decoder": codecs.getincrementaldecoder("utf-8")(errors="replace")}
                    for file in (stdout, stderr)]
         started = time.monotonic()
+        next_heartbeat = started + HEARTBEAT_SECONDS
 
         def drain(*, final: bool = False) -> None:
             if on_output is None:
@@ -142,6 +146,9 @@ def capture_command(*, args: list[str], timeout: float, input_text: str | None,
         try:
             while process.poll() is None:
                 drain()
+                if on_heartbeat is not None and time.monotonic() >= next_heartbeat:
+                    on_heartbeat()
+                    next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
                 if time.monotonic() - started >= timeout:
                     raise subprocess.TimeoutExpired(args, timeout)
                 time.sleep(0.1)
@@ -161,6 +168,16 @@ def capture_command(*, args: list[str], timeout: float, input_text: str | None,
 class Journal:
     def __init__(self, *, directory: Path) -> None:
         self.directory = directory
+        self.started = time.monotonic()
+        self.stage = "initializing"
+
+    def progress(self, *, text: str) -> None:
+        elapsed = int(time.monotonic() - self.started)
+        print(f"[{elapsed // 60:02d}:{elapsed % 60:02d}] {redact(text)}", file=sys.stderr, flush=True)
+
+    def set_stage(self, *, text: str) -> None:
+        self.stage = text
+        self.progress(text=text)
 
     def event(self, *, kind: str, **fields) -> None:
         record = {"time": now(), "kind": kind, **fields}
@@ -171,6 +188,10 @@ class Journal:
             file.flush()
             os.fsync(file.fileno())
         self.log(text=text)
+        # Only display the event name and safe identity fields, not raw API records.
+        if kind != "state_saved":
+            identity = " ".join(f"{key}={fields[key]}" for key in ("combo", "instance_id") if key in fields)
+            self.progress(text=f"{kind.replace('_', ' ')} {identity}".rstrip())
 
     def log(self, *, text: str) -> None:
         with (self.directory / "driver.log").open("a") as file:
@@ -181,7 +202,9 @@ class Journal:
             env: dict | None = None) -> subprocess.CompletedProcess:
         # Never log arguments: remote scripts may contain credentials or signed URLs.
         started = time.monotonic()
-        self.log(text=f"command started: {Path(args[0]).name}; timeout={timeout}s")
+        command = Path(args[0]).name
+        self.log(text=f"command started: {command}; timeout={timeout}s")
+        self.progress(text=f"{self.stage}: {command} started (timeout {timeout:g}s)")
         output_file = None
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -192,10 +215,13 @@ class Journal:
         def record_output(text: str) -> None:
             output_file.write(f"[{now()}] {redact(text)}")
             output_file.flush()
+            print(redact(text), end="", file=sys.stderr, flush=True)
 
         try:
             result = capture_command(args=args, timeout=timeout, input_text=input_text, env=env,
-                                     on_output=record_output if output_file is not None and not sensitive else None)
+                                     on_output=record_output if output_file is not None and not sensitive else None,
+                                     on_heartbeat=lambda: self.progress(
+                                         text=f"{self.stage}: waiting for {command} ({time.monotonic() - started:.0f}s elapsed)"))
             if output_file is not None:
                 if sensitive:
                     output_file.write("[sensitive output omitted]\n")
@@ -209,6 +235,7 @@ class Journal:
             if output_file is not None:
                 output_file.close()
         self.log(text=f"command finished: {Path(args[0]).name}; rc={result.returncode}; elapsed={time.monotonic() - started:.1f}s")
+        self.progress(text=f"{self.stage}: {command} finished (exit {result.returncode}, {time.monotonic() - started:.1f}s)")
         if check and result.returncode:
             raise Blocked(f"{Path(args[0]).name} failed (exit {result.returncode}); see local logs")
         return result

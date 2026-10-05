@@ -628,16 +628,18 @@ class RecoveryTests(LocalFixture):
 
     def test_command_logs_stream_before_process_finishes(self) -> None:
         log_path = self.directory / "setup.log"
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        screen = io.StringIO()
+        with contextlib.redirect_stderr(screen), ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(self.journal.run, args=["bash", "-c", "echo first-stage; sleep 1; echo second-stage"],
                                      timeout=5, log_path=log_path)
             end = time.monotonic() + 0.8
             while time.monotonic() < end:
-                if log_path.exists() and "first-stage" in log_path.read_text():
+                if log_path.exists() and "first-stage" in log_path.read_text() and "first-stage" in screen.getvalue():
                     break
                 time.sleep(0.01)
             self.assertIn("first-stage", log_path.read_text())
             self.assertFalse(future.done())
+            self.assertIn("first-stage", screen.getvalue())
             result = future.result(timeout=5)
         self.assertEqual(result.stdout, "first-stage\nsecond-stage\n")
         self.assertIn("second-stage", log_path.read_text())
@@ -651,6 +653,36 @@ class RecoveryTests(LocalFixture):
         result = self.journal.run(args=["bash", "-c", "echo must-not-be-logged"], sensitive=True, log_path=log_path)
         self.assertEqual(result.stdout.strip(), "must-not-be-logged")
         self.assertNotIn("must-not-be-logged", log_path.read_text())
+
+    def test_terminal_stream_is_redacted_and_raw_result_is_preserved(self) -> None:
+        screen = io.StringIO()
+        log_path = self.directory / "setup.log"
+        with contextlib.redirect_stderr(screen):
+            result = self.journal.run(
+                args=["bash", "-c", "echo 'stage-ready AWS_SECRET_ACCESS_KEY=secret https://example.invalid/key?signature=secret'"],
+                log_path=log_path)
+        self.assertIn("stage-ready", screen.getvalue())
+        self.assertIn("[redacted]", screen.getvalue())
+        self.assertNotIn("secret", screen.getvalue())
+        self.assertIn("secret", result.stdout)
+        self.assertIn("stage-ready", log_path.read_text())
+
+    def test_sensitive_and_unlogged_raw_output_stay_off_screen(self) -> None:
+        screen = io.StringIO()
+        with contextlib.redirect_stderr(screen):
+            self.journal.run(args=["bash", "-c", "echo private-record"], sensitive=True,
+                             log_path=self.directory / "private.log")
+            self.journal.run(args=["bash", "-c", "echo unreviewed-record"])
+        self.assertNotIn("private-record", screen.getvalue())
+        self.assertNotIn("unreviewed-record", screen.getvalue())
+        self.assertIn("finished", screen.getvalue())
+
+    def test_quiet_commands_have_stage_heartbeats(self) -> None:
+        screen = io.StringIO()
+        with contextlib.redirect_stderr(screen), patch.object(common, "HEARTBEAT_SECONDS", 0.05):
+            self.journal.set_stage(text="combo 1/2: setup")
+            self.journal.run(args=["bash", "-c", "sleep 0.3"])
+        self.assertIn("combo 1/2: setup: waiting for bash", screen.getvalue())
 
     def test_logging_redacts_credentials_and_signed_urls(self) -> None:
         text = 'AWS_SECRET_ACCESS_KEY=secret VAST_API_KEY=token https://example.invalid/key?X-Amz-Signature=secret'

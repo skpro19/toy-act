@@ -120,35 +120,46 @@ def execute(iteration: Iteration) -> None:
     # Every additional provisioning/setup/launch still requires the pinned revision.
     git_preflight(journal=journal, expected=iteration.manifest["git_commit"])
     local_preflight(journal)
-    for combo, entry in zip(iteration.state["combos"], iteration.manifest["combos"]):
+    total = len(iteration.state["combos"])
+    for index, (combo, entry) in enumerate(zip(iteration.state["combos"], iteration.manifest["combos"]), start=1):
         if reconcile(iteration=iteration, combo=combo) or combo["status"] == "running":
             continue
+        label = f"combo {index}/{total} ({combo['id']})"
+        journal.set_stage(text=f"{label}: validating inputs and dataset source")
         iteration.validate()
         config_path = iteration.directory / entry["config"]
         if combo["status"] in {"pending", "provisioning", "setup"}:
             git_preflight(journal=journal, expected=iteration.manifest["git_commit"])
             validate_dataset_source(journal=journal, config=tomllib.loads(config_path.read_text()), config_path=config_path)
         if combo["status"] in {"pending", "provisioning"}:
+            journal.set_stage(text=f"{label}: provisioning and hardware/network checks")
             provision(journal=journal, combo=combo, directory=iteration.directory / "combos" / combo["id"],
                       commit=iteration.manifest["git_commit"], save=iteration.save)
         if combo["status"] == "setup":
+            journal.set_stage(text=f"{label}: remote setup and dataset validation")
             git_preflight(journal=journal, expected=iteration.manifest["git_commit"])
             setup(journal=journal, combo=combo, config_path=config_path,
                   commit=iteration.manifest["git_commit"], save=iteration.save)
         if combo["status"] == "ready_to_launch":
+            journal.set_stage(text=f"{label}: launching training and monitoring")
             git_preflight(journal=journal, expected=iteration.manifest["git_commit"])
             launch(journal=journal, combo=combo, save=iteration.save)
         elif combo["status"] == "awaiting_handoff":
+            journal.set_stage(text=f"{label}: restoring monitoring")
             ensure_forwarding(journal=journal, combo=combo)
             ensure_watcher(journal=journal, combo=combo)
             # Reissue only an unacknowledged request, using an idempotent helper.
             # Known launches need monitoring recovery, not another service launch.
             if not combo.get("services_started"):
                 launch(journal=journal, combo=combo, save=iteration.save)
+        journal.set_stage(text=f"{label}: waiting for handoff")
         code = handoff(journal=journal, combo=combo, save=iteration.save)
         if code == 0:
             # Independent, fresh check before advancing the sweep, not saved JSON.
             code = handoff(journal=journal, combo=combo, save=iteration.save, wait_seconds=0)
+        if code == 0:
+            journal.progress(text=f"{label}: handoff verified (training continues independently)")
+            print(iteration.summary(), flush=True)
         if code == 3 and not reconcile(iteration=iteration, combo=combo):
             raise Blocked("Training became terminal before handoff; watcher is finishing backup/cleanup. Resume this iteration later")
 
@@ -192,10 +203,13 @@ def main() -> int:
         with lock(directory / "driver.lock"):
             # Error/interruption state is persisted while still holding the lock.
             try:
+                journal.progress(text=f"Iteration: {directory.name}\nLogs: {directory}\nResume: uv run --frozen python .pi/prompts/scripts/vast-train/workflow.py --resume {directory.name}")
                 if not args.resume:
+                    journal.set_stage(text="Git preflight and immutable config resolution")
                     create(directory=directory, source=source, kind="sweep" if args.spec else "single",
                            journal=journal, expected_commit=args.expected_commit)
                 iteration = Iteration(directory=directory)
+                journal.progress(text=f"Combos: {len(iteration.state['combos'])}; mode: {'plan' if args.plan else 'resume' if args.resume else 'fresh'}")
                 if args.resume and source is not None and str(source) != iteration.manifest["source"]:
                     raise Blocked("Resume source path differs; saved configs must not be substituted")
                 if args.expected_commit and args.expected_commit != iteration.manifest["git_commit"]:

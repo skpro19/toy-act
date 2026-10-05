@@ -83,6 +83,16 @@ on explicit resume, not a continuously updated dashboard.
 
 ## Logging and response
 
+Keep driver stdout/stderr visible; do not redirect or suppress them. The driver
+prints the iteration ID, log directory, resume command, combo count, elapsed
+stage updates, and command start/finish messages. It streams redacted output
+from configured diagnostic logs to stderr and emits waiting heartbeats every
+30 seconds during commands. Sensitive and unlogged raw command output stays
+hidden. Each verified handoff prints a current summary, including TensorBoard
+URLs; handoff is not training completion. Detached watcher output remains in
+its local logs after the driver returns. These updates apply to new driver
+processes, not an already-running process.
+
 All records are ignored and local:
 `.vast-train-local/ablations/<spec-name>/<iteration-id>/` contains
 `manifest.json`, `state.json`, `inputs/`, `configs/`, `events.jsonl`,
