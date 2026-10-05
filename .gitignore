@@ -42,3 +42,4 @@ ISSUES.md
 ABLATIONS.md
 debug/
 opencode.json
+scripts/utils/plot-episode-length-distribution.py
