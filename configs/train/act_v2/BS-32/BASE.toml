@@ -29,6 +29,7 @@ throughput = true
 timing = true
 
 [rollout]
+n_action_steps = [10]
 episodes = 30
 horizon = 250
 seed = 0

@@ -122,19 +122,23 @@ def build_runs(*, runs_dir: Path, run_names: list[str] | None) -> list[dict[str,
 
     runs: list[dict[str, Any]] = []
     for run_dir in run_dirs:
-        success = read_scalar_series(run_dir=run_dir, tag=SUCCESS_RATE_TAG)
-        horizon = read_scalar_series(run_dir=run_dir, tag=HORIZON_TAG)
-        if not success and not horizon:
-            print(f"skip {run_dir.name}: no eval scalars")
-            continue
-        runs.append(
-            {
+        prefixes = set()
+        for event_path in sorted(run_dir.glob(EVENT_GLOB)):
+            accumulator = EventAccumulator(str(event_path))
+            accumulator.Reload()
+            prefixes.update(
+                tag.rsplit("/", 1)[0] for tag in accumulator.Tags().get("scalars", [])
+                if tag.startswith("eval/") and tag.endswith("/success_rate"))
+        for prefix in sorted(prefixes):
+            runs.append({
                 "run_dir": run_dir,
                 "config": read_run_config(run_dir=run_dir),
-                "success_rate": success,
-                "horizon": horizon,
-            }
-        )
+                "eval_variant": prefix,
+                "success_rate": read_scalar_series(run_dir=run_dir, tag=f"{prefix}/success_rate"),
+                "horizon": read_scalar_series(run_dir=run_dir, tag=f"{prefix}/horizon_mean"),
+            })
+        if not prefixes:
+            print(f"skip {run_dir.name}: no eval scalars")
     runs.sort(key=lambda run: run["config"].get("batch_size") or 0)
     return runs
 
@@ -148,6 +152,7 @@ def plot_runs(*, runs: list[dict[str, Any]], output: Path, title: str) -> None:
 
     for run in runs:
         label = run_label(run_dir=run["run_dir"], config=run["config"])
+        label += f" · {run['eval_variant']}"
         if run["success_rate"]:
             steps, values = zip(*run["success_rate"])
             success_ax.plot(steps, values, marker="o", markersize=3, linewidth=1.5, label=label)

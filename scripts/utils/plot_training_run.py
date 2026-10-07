@@ -85,8 +85,8 @@ def style_axis(*, axis: Axes, label: str, tag: str, log_scale: bool) -> None:
     axis.grid(alpha=0.25)
     if log_scale:
         axis.set_yscale("log")
-    if tag in PANEL_Y_LIMITS:
-        axis.set_ylim(*PANEL_Y_LIMITS[tag])
+    if tag.endswith("/success_rate"):
+        axis.set_ylim(0.0, 1.0)
 
 
 def render_group(
@@ -137,14 +137,21 @@ def main() -> None:
         smooth=True,
         log_scale=True,
     )
-    render_group(
-        accumulator=accumulator,
-        output_path=args.output_dir / "eval_uniform_panels.png",
-        title="Evaluation during training",
-        metrics=EVAL_METRICS,
-        smooth=False,
-        log_scale=False,
-    )
+    eval_prefixes = sorted({
+        tag.rsplit("/", 1)[0] for tag in accumulator.Tags()["scalars"]
+        if tag.startswith("eval/") and tag.endswith("/success_rate")
+    })
+    for prefix in eval_prefixes:
+        suffix = prefix.replace("/", "_")
+        render_group(
+            accumulator=accumulator,
+            output_path=args.output_dir / f"{suffix}_uniform_panels.png",
+            title=f"Evaluation during training ({prefix})",
+            metrics=((f"{prefix}/horizon_mean", "Mean episode horizon"),
+                     (f"{prefix}/success_rate", "Success rate")),
+            smooth=False,
+            log_scale=False,
+        )
     render_group(
         accumulator=accumulator,
         output_path=args.output_dir / "latent_log_scale_uniform_panels.png",

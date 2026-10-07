@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import random
 import copy
 import json
 import os
@@ -90,6 +91,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DATASET,
         help="robomimic low-dim hdf5 used to recreate PickPlaceCan",
     )
+    parser.add_argument("--n-action-steps", type=int, nargs="+",
+                        help="execution lengths to evaluate; overrides checkpoint rollout configuration")
     parser.add_argument("--n-rollouts", type=int, default=20, help="number of evaluation episodes")
     parser.add_argument("--horizon", type=int, default=DEFAULT_HORIZON, help="max steps per episode")
     parser.add_argument("--seed", type=int, default=0, help="random seed for env resets")
@@ -435,6 +438,18 @@ def set_render_window_title(*, env, title: str | None) -> None:
             simulate.filename = title
 
 
+def validate_n_action_steps(*, values: list[int], action_chunk_size: int) -> list[int]:
+    """Require explicit, unique execution lengths within the predicted chunk."""
+    if not isinstance(values, list) or not values:
+        raise ValueError("n_action_steps must be a nonempty list")
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= action_chunk_size:
+            raise ValueError(f"n_action_steps must contain integers in 1..{action_chunk_size}, got {value!r}")
+    if len(set(values)) != len(values):
+        raise ValueError("n_action_steps must not contain duplicates")
+    return list(values)
+
+
 def run_rollout(
     *,
     model: ACTV2,
@@ -447,10 +462,11 @@ def run_rollout(
     render: bool,
     video_writer,
     video_skip: int,
+    n_action_steps: int,
     action_chunk_size: int = ACTION_CHUNK_SIZE,
     time_limit_s: float | None = None,
-    window_title: str | None = None,
-) -> dict[str, float | int | bool]:
+    window_title: str | None = None,) -> dict[str, float | int | bool]:
+    validate_n_action_steps(values=[n_action_steps], action_chunk_size=action_chunk_size)
     start = time.monotonic()
     obs = env.reset()
     total_reward = 0.0
@@ -460,7 +476,7 @@ def run_rollout(
     video_count = 0
 
     for step_idx in range(horizon):
-        if action_chunk is None or chunk_step >= action_chunk_size:
+        if action_chunk is None or chunk_step >= n_action_steps:
             action_chunk = predict_action_chunk(
                 model=model,
                 obs=obs,
@@ -552,6 +568,11 @@ def main() -> None:
 
     checkpoint = load_checkpoint(checkpoint_path=args.checkpoint, device=device)
     use_z, image_keys, action_chunk_size = rollout_settings_from_checkpoint(checkpoint=checkpoint)
+    execution_lengths = args.n_action_steps
+    if execution_lengths is None:
+        execution_lengths = checkpoint.get("config", {}).get("rollout", {}).get("n_action_steps")
+    execution_lengths = validate_n_action_steps(
+        values=execution_lengths, action_chunk_size=action_chunk_size)
     model, normalization = load_model(
         checkpoint=checkpoint,
         device=device,
@@ -581,37 +602,32 @@ def main() -> None:
     )
 
     video_writer = imageio.get_writer(args.video, fps=20) if write_video else None
-    rollouts: list[dict[str, float | int | bool]] = []
+    print(f"n_action_steps => {execution_lengths}")
+    summaries = {}
     try:
-        for episode_idx in range(args.n_rollouts):
-            rollout_stats = run_rollout(
-                model=model,
-                env=env,
-                device=device,
-                normalization=normalization,
-                image_keys=image_keys,
-                action_chunk_size=action_chunk_size,
-                horizon=args.horizon,
-                terminate_on_success=args.terminate_on_success,
-                render=on_screen,
-                video_writer=video_writer,
-                video_skip=args.video_skip,
-            )
-            rollouts.append(rollout_stats)
-            print(
-                f"episode {episode_idx + 1}/{args.n_rollouts}: "
-                f"success={rollout_stats['success']} "
-                f"return={rollout_stats['return']:.3f} "
-                f"horizon={rollout_stats['horizon']}"
-            )
+        for execution_length in execution_lengths:
+            rollouts = []
+            for episode_idx in range(args.n_rollouts):
+                np.random.seed(args.seed + episode_idx)
+                random.seed(args.seed + episode_idx)
+                torch.manual_seed(args.seed + episode_idx)
+                rollout_stats = run_rollout(
+                    model=model, env=env, device=device, normalization=normalization,
+                    image_keys=image_keys, action_chunk_size=action_chunk_size,
+                    n_action_steps=execution_length, horizon=args.horizon,
+                    terminate_on_success=args.terminate_on_success, render=on_screen,
+                    video_writer=video_writer, video_skip=args.video_skip,
+                )
+                rollouts.append(rollout_stats)
+                print(f"n_action_steps={execution_length} episode {episode_idx + 1}/{args.n_rollouts}: {rollout_stats}")
+            summaries[str(execution_length)] = summarize_rollouts(rollouts=rollouts)
     finally:
         if video_writer is not None:
             video_writer.close()
         close_env(env)
 
-    summary = summarize_rollouts(rollouts=rollouts)
-    print("rollout summary")
-    print(json.dumps(summary, indent=2))
+    print("rollout summaries by n_action_steps")
+    print(json.dumps(summaries, indent=2))
 
 
 if __name__ == "__main__":

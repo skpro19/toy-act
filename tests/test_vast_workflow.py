@@ -236,7 +236,7 @@ class IterationTests(LocalFixture):
             'epoch_metrics = false\neval = false\nhyperparams = false\n'
             'latent = false\nlr = false\noptimizer = false\nranges = false\n'
             'sensitivity = false\nthroughput = false\ntiming = false\n'
-            '[rollout]\nepisodes = 30\nhorizon = 250\nseed = 0\n')
+            '[rollout]\nepisodes = 30\nhorizon = 250\nseed = 0\nn_action_steps = [10]\n')
         self.source.write_text(f'group = "{group}"\n[grid]\nseed = [2, 1]\n')
         with patch.object(iteration, "git_preflight", return_value=COMMIT), \
                 patch.object(common, "instances", side_effect=AssertionError("Cloud access in plan")):

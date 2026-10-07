@@ -61,7 +61,8 @@ class CheckpointEvaluationTest(unittest.TestCase):
                         train_seconds=10,
                         train_steps=20,
                         train_samples=160,
-                        checkpoint_seconds=2,
+                        cumulative_seconds={"train": 5.0, "eval": 2.0},
+                        n_action_steps=[5, 10],
                         tensorboard={
                             namespace: True
                             for namespace in train_v2.TENSORBOARD_NAMESPACES
@@ -79,12 +80,16 @@ class CheckpointEvaluationTest(unittest.TestCase):
             self.assertTrue(np.array_equal(np.random.get_state()[1], expected_numpy[1]))
             self.assertEqual(random.getstate(), expected_python)
             self.assertTrue(torch.equal(torch.get_rng_state(), expected_torch))
-            self.assertEqual(seeds, list(range(30)))
-            self.assertEqual(events.Scalars("eval/success_rate")[0].value, 0.5)
-            self.assertEqual(events.Scalars("throughput/train_steps_per_sec")[0].value, 2)
-            self.assertEqual(events.Scalars("throughput/train_samples_per_sec")[0].value, 16)
-            self.assertGreater(events.Scalars("throughput/rollout_env_steps_per_sec")[0].value, 0)
-            self.assertEqual(events.Scalars("timing/checkpoint_seconds")[0].step, 2000)
+            self.assertEqual(seeds, list(range(30)) * 2)
+            self.assertEqual(events.Scalars("eval/n_action_steps_10/success_rate")[0].value, 0.5)
+            self.assertEqual(events.Scalars("throughput/train_updates_per_second")[0].value, 2)
+            self.assertEqual(events.Scalars("throughput/train_chunks_per_second")[0].value, 16)
+            self.assertGreater(events.Scalars("throughput/eval_env_steps_per_second")[0].value, 0)
+            self.assertEqual(events.Scalars("timing/cumulative_train_seconds")[0].value, 15)
+            self.assertAlmostEqual(
+                events.Scalars("timing/interval_train_fraction")[0].value
+                + events.Scalars("timing/interval_eval_fraction")[0].value, 1)
+            self.assertNotIn("timing/checkpoint_seconds", events.Tags()["scalars"])
 
 
 class DatasetResolutionTest(unittest.TestCase):
@@ -108,7 +113,7 @@ class DatasetResolutionTest(unittest.TestCase):
                 namespace: True
                 for namespace in train_v2.TENSORBOARD_NAMESPACES
             },
-            "rollout": {"episodes": 30, "horizon": 250, "seed": 0},
+            "rollout": {"episodes": 30, "horizon": 250, "seed": 0, "n_action_steps": [10]},
         }
 
     def test_resolve_dataset_prefers_cli_then_config(self) -> None:

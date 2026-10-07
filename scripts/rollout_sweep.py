@@ -89,6 +89,8 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_HORIZON,
         help="max steps per episode",
     )
+    parser.add_argument("--n-action-steps", type=int, required=True,
+                        help="actions executed before replanning")
     parser.add_argument("--seed", type=int, default=0, help="random seed for env resets")
     parser.add_argument(
         "--dataset",
@@ -159,6 +161,7 @@ def evaluate_checkpoint(
     terminate_on_success: bool,
     on_screen: bool,
     reset_seed_base: int,
+    n_action_steps: int,
     progress: tqdm,
 ) -> dict[str, float | int]:
     model, normalization = load_model(
@@ -182,6 +185,7 @@ def evaluate_checkpoint(
                 render=on_screen,
                 video_writer=None,
                 video_skip=1,
+                n_action_steps=n_action_steps,
             )
             rollouts.append(rollout_stats)
             progress.set_postfix(
@@ -328,6 +332,7 @@ def main() -> None:
                     terminate_on_success=args.terminate_on_success,
                     on_screen=args.on_screen,
                     reset_seed_base=args.seed,
+                    n_action_steps=args.n_action_steps,
                     progress=progress,
                 )
             except Exception as exc:

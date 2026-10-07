@@ -38,6 +38,7 @@ from scripts.rollout import (
     make_rollout_env_meta,
     run_rollout,
     summarize_rollouts,
+    validate_n_action_steps,
 )
 from scripts.train_v1 import (
     compute_adam_moment_norms,
@@ -76,6 +77,7 @@ CONFIG_KEYS = (
 )
 
 ROLLOUT_KEYS = (
+    "n_action_steps",
     "episodes",
     "horizon",
     "seed",
@@ -200,15 +202,15 @@ def validate_config(*, config: dict) -> dict:
         tensorboard=config["tensorboard"],
     )
     config["rollout"] = validate_rollout_flags(
-        rollout=config["rollout"],
+        rollout=config["rollout"], action_chunk_size=action_chunk_size,
     )
 
     return config
 
 
-def validate_rollout_flags(*, rollout: dict) -> dict:
+def validate_rollout_flags(*, rollout: dict, action_chunk_size: int) -> dict:
     if not isinstance(rollout, dict):
-        raise ValueError("rollout must be a table with episodes, horizon, and seed")
+        raise ValueError("rollout must be a table with episodes, horizon, seed, and n_action_steps")
 
     missing = [key for key in ROLLOUT_KEYS if key not in rollout]
     if missing:
@@ -233,7 +235,10 @@ def validate_rollout_flags(*, rollout: dict) -> dict:
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         raise ValueError(f"rollout.seed must be >= 0, got {seed!r}")
 
+    execution_lengths = validate_n_action_steps(
+        values=rollout["n_action_steps"], action_chunk_size=action_chunk_size)
     return {
+        "n_action_steps": execution_lengths,
         "episodes": episodes,
         "horizon": horizon,
         "seed": seed,
@@ -565,13 +570,16 @@ def evaluate_and_log_checkpoint(
     train_seconds: float,
     train_steps: int,
     train_samples: int,
-    checkpoint_seconds: float,
+    cumulative_seconds: dict[str, float],
+    n_action_steps: list[int],
     tensorboard: dict,
     episodes: int,
     horizon: int,
     seed: int,
     action_chunk_size: int,) -> Any:
     """Evaluate a saved model without changing the training RNG or model mode."""
+    n_action_steps = validate_n_action_steps(
+        values=n_action_steps, action_chunk_size=action_chunk_size)
     run_eval = tensorboard["eval"]
     summary = None
     rollout_seconds = 0.0
@@ -597,23 +605,39 @@ def evaluate_and_log_checkpoint(
                 env = create_rollout_env(env_meta=env_meta, on_screen=False, write_video=False)
 
             model.eval()
-            rollouts = []
             with torch.inference_mode():
-                for episode_idx in range(episodes):
-                    np.random.seed(seed + episode_idx)
-                    rollouts.append(run_rollout(
-                        model=model,
-                        env=env,
-                        device=device,
-                        normalization=normalization,
-                        image_keys=image_keys,
-                        action_chunk_size=action_chunk_size,
-                        horizon=horizon,
-                        terminate_on_success=True,
-                        render=False,
-                        video_writer=None,
-                        video_skip=1,
-                    ))
+                for execution_length in n_action_steps:
+                    variant_started = time.monotonic()
+                    rollouts = []
+                    for episode_idx in range(episodes):
+                        episode_seed = seed + episode_idx
+                        np.random.seed(episode_seed)
+                        random.seed(episode_seed)
+                        torch.manual_seed(episode_seed)
+                        rollouts.append(run_rollout(
+                            model=model, env=env, device=device,
+                            normalization=normalization, image_keys=image_keys,
+                            action_chunk_size=action_chunk_size,
+                            n_action_steps=execution_length, horizon=horizon,
+                            terminate_on_success=True, render=False,
+                            video_writer=None, video_skip=1,
+                        ))
+                    variant_seconds = max(time.monotonic() - variant_started, 1e-9)
+                    summary = summarize_rollouts(rollouts=rollouts)
+                    variant_steps = sum(int(result["horizon"]) for result in rollouts)
+                    env_steps += variant_steps
+                    suffix = f"n_action_steps_{execution_length}"
+                    for metric in ("success_rate", "return_mean", "horizon_mean"):
+                        writer.add_scalar(f"eval/{suffix}/{metric}", summary[metric], global_step)
+                    if tensorboard["timing"]:
+                        writer.add_scalar(f"timing/{suffix}/eval_batch_seconds", variant_seconds, global_step)
+                    if tensorboard["throughput"]:
+                        writer.add_scalar(f"throughput/{suffix}/eval_env_steps_per_second",
+                                          variant_steps / variant_seconds, global_step)
+                        writer.add_scalar(f"throughput/{suffix}/eval_episodes_per_minute",
+                                          episodes * 60 / variant_seconds, global_step)
+                    print(f"step {global_step}: {suffix} success={summary['num_success']}/{episodes} "
+                          f"elapsed={variant_seconds:.1f}s")
         finally:
             model.train(was_training)
             np.random.set_state(numpy_state)
@@ -621,39 +645,43 @@ def evaluate_and_log_checkpoint(
             torch.set_rng_state(torch_state)
             torch.cuda.set_rng_state_all(cuda_states)
 
-        rollout_seconds = time.monotonic() - eval_started
-        summary = summarize_rollouts(rollouts=rollouts)
-        env_steps = sum(int(rollout["horizon"]) for rollout in rollouts)
+        rollout_seconds = max(time.monotonic() - eval_started, 1e-9)
 
-    if run_eval:
-        writer.add_scalar("eval/success_rate", summary["success_rate"], global_step)
-        writer.add_scalar("eval/return_mean", summary["return_mean"], global_step)
-        writer.add_scalar("eval/horizon_mean", summary["horizon_mean"], global_step)
+    cumulative_seconds["train"] += train_seconds
+    cumulative_seconds["eval"] += rollout_seconds
+    interval_seconds = max(train_seconds + rollout_seconds, 1e-9)
+    cumulative_total = max(sum(cumulative_seconds.values()), 1e-9)
+    elapsed_seconds = max(time.monotonic() - run_started, 1e-9)
 
     if tensorboard["throughput"]:
-        writer.add_scalar("throughput/train_steps_per_sec", train_steps / train_seconds, global_step)
-        writer.add_scalar("throughput/train_samples_per_sec", train_samples / train_seconds, global_step)
+        writer.add_scalar("throughput/train_updates_per_second", train_steps / train_seconds, global_step)
+        writer.add_scalar("throughput/train_chunks_per_second", train_samples / train_seconds, global_step)
         if run_eval:
             writer.add_scalar(
-                "throughput/rollout_env_steps_per_sec", env_steps / rollout_seconds, global_step,
+                "throughput/eval_env_steps_per_second", env_steps / rollout_seconds, global_step,
             )
             writer.add_scalar(
-                "throughput/rollout_episodes_per_min", episodes * 60 / rollout_seconds,
+                "throughput/eval_episodes_per_minute", episodes * len(n_action_steps) * 60 / rollout_seconds,
                 global_step,
             )
 
+        writer.add_scalar("throughput/run_updates_per_second", global_step / elapsed_seconds, global_step)
+
     if tensorboard["timing"]:
-        if run_eval:
-            writer.add_scalar("timing/rollout_seconds", rollout_seconds, global_step)
-        writer.add_scalar("timing/checkpoint_seconds", checkpoint_seconds, global_step)
-        writer.add_scalar("timing/elapsed_hours", (time.monotonic() - run_started) / 3600, global_step)
+        timing_metrics = {
+            "train_interval_seconds": train_seconds,
+            "eval_batch_seconds": rollout_seconds,
+            "run_elapsed_hours": elapsed_seconds / 3600,
+            "interval_train_fraction": train_seconds / interval_seconds,
+            "interval_eval_fraction": rollout_seconds / interval_seconds,
+            "cumulative_train_seconds": cumulative_seconds["train"],
+            "cumulative_eval_seconds": cumulative_seconds["eval"],
+            "cumulative_eval_fraction": cumulative_seconds["eval"] / cumulative_total,
+        }
+        for metric, value in timing_metrics.items():
+            writer.add_scalar(f"timing/{metric}", value, global_step)
 
     writer.flush()
-    if run_eval:
-        print(
-            f"step {global_step}: rollout success={summary['num_success']}/{episodes} "
-            f"return={summary['return_mean']:.3f} elapsed={rollout_seconds:.1f}s"
-        )
     return env
 
 
@@ -746,6 +774,7 @@ def train(
     save_run_config(run_dir=run_dir, run_name=run_name, config=config)
     writer = SummaryWriter(log_dir=str(run_dir))
     run_started = time.monotonic()
+    cumulative_seconds = {"train": 0.0, "eval": 0.0}
     train_interval_started = run_started
     last_evaluated_step = 0
     train_samples = 0
@@ -767,7 +796,7 @@ def train(
     rollout = config["rollout"]
     print(
         f"rollout evaluation => {rollout['episodes']} episodes, "
-        f"horizon {rollout['horizon']}"
+        f"horizon {rollout['horizon']}, n_action_steps {rollout['n_action_steps']}"
     )
     print(f"action_loss => {action_loss_kind}")
     print(f"use_z => {config['use_z']}")
@@ -945,7 +974,6 @@ def train(
                 normalization=normalization,
             )
             if snapshot_path is not None:
-                checkpoint_seconds = time.monotonic() - checkpoint_started
                 train_seconds = max(checkpoint_started - train_interval_started, 1e-9)
                 print(f"saved snapshot => {snapshot_path.resolve()}")
                 eval_env = evaluate_and_log_checkpoint(
@@ -961,7 +989,8 @@ def train(
                     train_seconds=train_seconds,
                     train_steps=global_step - last_evaluated_step,
                     train_samples=train_samples,
-                    checkpoint_seconds=checkpoint_seconds,
+                    cumulative_seconds=cumulative_seconds,
+                    n_action_steps=rollout["n_action_steps"],
                     tensorboard=tensorboard,
                     episodes=rollout["episodes"],
                     horizon=rollout["horizon"],
@@ -1041,7 +1070,8 @@ def train(
             train_seconds=max(checkpoint_started - train_interval_started, 1e-9),
             train_steps=global_step - last_evaluated_step,
             train_samples=train_samples,
-            checkpoint_seconds=time.monotonic() - checkpoint_started,
+            cumulative_seconds=cumulative_seconds,
+            n_action_steps=rollout["n_action_steps"],
             tensorboard=tensorboard,
             episodes=rollout["episodes"],
             horizon=rollout["horizon"],
