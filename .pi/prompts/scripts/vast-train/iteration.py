@@ -167,9 +167,13 @@ class Iteration:
         rows = [f"Iteration: {self.directory.name}", f"Directory: {self.directory}",
                 f"Commit: {self.manifest['git_commit']}", f"Driver: {self.state['driver_status']}",
                 "combo  status                instance  tensorboard / run directory"]
+        dashboard = self.state.get("tensorboard", {})
+        if dashboard:
+            rows.append(f"Shared TensorBoard: {dashboard['url']} (S3-backed; updates delayed)")
+            rows.append(f"Dashboard diagnostics: {self.directory / 'tensorboard'}")
         for combo, entry in zip(self.state["combos"], self.manifest["combos"]):
             lease = combo.get("lease", {})
-            tb = f"http://localhost:{lease['TB_PORT']}/" if lease else "-"
+            tb = dashboard.get("url") or (f"http://localhost:{lease['TB_PORT']}/" if lease else "-")
             rows.append(f"{combo['id']}   {combo['status']:<21} {str(combo.get('instance_id', '-')):<9} {tb}  {entry['slug']}")
             if combo.get("run_dir"):
                 rows.append(f"       {combo['run_dir']}")

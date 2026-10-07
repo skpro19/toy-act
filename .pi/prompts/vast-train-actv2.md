@@ -66,6 +66,7 @@ Unknown or missing hardware/API data fails closed.
 | Config/credential transfer, dataset sync and integrity/camera checks | `setup_run.py`, `verify-dataset.sh` |
 | Idempotent TensorBoard/training/backup launch | `start-services.sh`, existing `runner.sh`, `ckpt-bkp-wrapper.sh` |
 | Local wrapper allocation and forwarding | `local-wrapper-lease.sh`, `setup_run.py` |
+| Per-ablation shared S3-backed dashboard and event synchronization | `ablation_tensorboard.py` |
 | Detached monitoring, terminal verification and cleanup | Saved copy of `local-watcher.sh` |
 | Authoritative read-only handoff gate | `check-handoff.py` |
 
@@ -132,6 +133,17 @@ TensorBoard URL, never assume port 6006. Resume restores the recorded lease afte
 reboot only if the slot is free or still owned by this instance. Occupied slots
 are never stolen, and old watcher cleanup cannot release a newer run's lease.
 A lost forward does not stop training.
+
+For sweep invocations only, `ablation_tensorboard.py` also manages one shared
+local dashboard per iteration. All its combos report that URL; a fresh sweep
+gets a separate server, while resume recovers the same service/cache. Event
+files are downloaded from the iteration's registered S3 run prefixes every
+30 seconds, so display updates lag remote backups. Services persist after
+handoff/completion for comparison and final uploads. Records, cached event
+files, server logs and sync status live under the iteration's `tensorboard/`.
+Occupied recorded ports or unrelated sessions are never stolen. Per-instance
+forwarding remains an internal handoff requirement; single-config invocations
+continue reporting their original forwarded URL. `--plan` starts no services.
 
 Run the foreground driver with a bounded timeout appropriate to the dataset.
 On interruption, report the saved iteration ID/resume command; no implicit fresh

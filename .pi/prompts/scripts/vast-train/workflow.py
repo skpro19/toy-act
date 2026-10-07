@@ -17,6 +17,7 @@ import time
 import tomllib
 from types import FrameType
 
+from ablation_tensorboard import ensure_dashboard
 from iteration import FINAL, Iteration, create, locate, new_directory
 from provision import provision
 from setup_run import (
@@ -115,11 +116,13 @@ def execute(iteration: Iteration) -> None:
         reconcile(iteration=iteration, combo=combo)
     actionable = [combo for combo in iteration.state["combos"] if combo["status"] not in FINAL | {"running"}]
     if not actionable:
+        ensure_dashboard(iteration)
         return
     # Existing monitoring/reconciliation is possible even after a branch advances.
     # Every additional provisioning/setup/launch still requires the pinned revision.
     git_preflight(journal=journal, expected=iteration.manifest["git_commit"])
     local_preflight(journal)
+    ensure_dashboard(iteration)
     total = len(iteration.state["combos"])
     for index, (combo, entry) in enumerate(zip(iteration.state["combos"], iteration.manifest["combos"]), start=1):
         if reconcile(iteration=iteration, combo=combo) or combo["status"] == "running":

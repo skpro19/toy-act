@@ -60,6 +60,32 @@ returns after handoff rather than waiting for training completion. Live watchers
 finish reports independently; `summary.txt` is a driver-time snapshot, refreshed
 on explicit resume, not a continuously updated dashboard.
 
+## Shared TensorBoard dashboard
+
+Each fresh ablation iteration gets **one local TensorBoard server**, shared by
+all its combos. Separate `/ablate` invocations get separate servers and URLs;
+explicit resume reuses or recovers only that iteration's recorded services.
+`--plan` starts no services and makes no S3 requests.
+
+The driver starts iteration-owned tmux services and records their allocated
+port/URL in `tensorboard/service.json`. A detached synchronizer reads only this
+iteration's recorded run prefixes from `s3://toy-act/runs/act_v2/<run>/`, using
+profile `toy-pickplace-backup`, and downloads only event files into distinct
+`tensorboard/logs/<combo>/<run>/` directories. It retries every 30 seconds,
+including after handoff and completion, so final uploads remain discoverable.
+Metrics lag the remote backup cadence (120-second pauses plus upload time),
+local synchronization and TensorBoard reload. This is not a real-time SSH feed.
+
+The server and synchronizer remain available after training finishes; completed
+runs stay cached for comparison. They are not reboot-supervised: explicit resume
+recovers them against the same cache and recorded port. Port/session conflicts
+block recovery; never steal an occupied port or kill an unrelated service.
+Diagnostics live in `tensorboard/server.log`, `tensorboard/driver.log`,
+`tensorboard/events.jsonl`, and `tensorboard/sync-status.json` beneath the iteration.
+Report the **shared iteration URL** for all combos, not their internal forwarding
+URLs. Existing per-instance TensorBoard servers and forwarding remain internal
+handoff checks; the shared dashboard never authorizes instance cleanup.
+
 ## Safety and failures
 
 - Preserve `vast-train-actv2.md`'s hardware, price, Git and cleanup policies.
