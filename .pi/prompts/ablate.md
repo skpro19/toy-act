@@ -96,7 +96,9 @@ uv run --frozen --only-group train python \
 This verifies ownership before restarting only that iteration's dashboard
 sessions, downloads its recorded event files, and reuses its saved port/cache.
 It never provisions, launches training, reconciles outcomes, or removes instances.
-An unrelated occupied port blocks recovery; no unrelated service is stopped.
+An unrelated occupied port blocks recovery; no unrelated service is stopped. The
+`/tb-s3` prompt wraps this recovery; pass an iteration ID or directory, or run it
+with no argument to choose from the saved dashboards.
 
 Report the **shared iteration URL** for all combos, not their internal forwarding
 URLs. Existing per-instance TensorBoard servers and forwarding remain internal

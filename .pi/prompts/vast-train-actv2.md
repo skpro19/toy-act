@@ -154,6 +154,8 @@ uv run --frozen --only-group train python \
 
 Refresh checks session ownership, restarts only that iteration's dashboard
 services, and retains its recorded port/cache. It does not reconcile outcomes.
+The `/tb-s3` prompt wraps this recovery; pass an iteration ID or directory, or run
+it with no argument to choose from the saved dashboards.
 Per-instance forwarding remains an internal handoff requirement; single-config
 invocations continue reporting their original forwarded URL. `--plan` starts no services.
 

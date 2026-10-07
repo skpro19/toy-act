@@ -203,7 +203,13 @@ def main() -> None:
     directory = args.directory.resolve()
     root = directory / "tensorboard"
     if args.mode == "refresh":
-        refresh_dashboard(directory=directory)
+        # Report blockers concisely instead of a traceback; callers surface the
+        # diagnostic path and never fall back to stopping an unrelated service.
+        try:
+            refresh_dashboard(directory=directory)
+        except (Blocked, ValueError, KeyError, TypeError, IndexError, OSError) as error:
+            print(f"Blocked: {error}", file=sys.stderr)
+            raise SystemExit(1)
         return
     if args.mode == "serve":
         service = json.loads((root / "service.json").read_text())
