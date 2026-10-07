@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only tabular report for one saved ablation iteration.
+"""Read-only reports for one saved ablation iteration.
 
-Lists iteration identity, configs, execution, verification, local records, S3
-artifacts, dashboard cache, and live progress. It never writes files, downloads
-objects, or calls Vast, and it never prints sensitive instance records.
+The ``runs`` mode lists run names, bucket links, and the sweep's fixed and
+ablated params. The ``report`` mode prints a full tabular report (identity,
+configs, execution, verification, records, S3, cache, progress). Neither mode
+writes files, downloads objects, or calls Vast, and neither prints sensitive
+instance records.
 """
 
 import argparse
@@ -143,6 +145,66 @@ def config_row(*, config_path: Path) -> dict:
         "n_action_steps": ",".join(str(value) for value in steps) or "-",
         "steps": config.get("steps", "-"),
     }
+
+
+def format_param(*, value: object) -> str:
+    """Render a TOML value compactly for a single table cell."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(format_param(value=item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{key}={format_param(value=item)}" for key, item in value.items())
+    return str(value)
+
+
+def spec_params(*, directory: Path, manifest: dict) -> tuple[dict, dict]:
+    """Read the sweep spec snapshot named by the manifest.
+
+    Returns the ``[fixed]`` and ``[grid]`` tables: the parameters held constant
+    and the parameters being ablated. Missing or unreadable specs yield empties.
+    """
+    source = manifest.get("source")
+    for entry in manifest.get("inputs", []):
+        if entry.get("source") != source or not entry.get("path"):
+            continue
+        try:
+            spec = tomllib.loads((directory / entry["path"]).read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            break
+        fixed = spec.get("fixed")
+        grid = spec.get("grid")
+        return (fixed if isinstance(fixed, dict) else {},
+                grid if isinstance(grid, dict) else {})
+    return {}, {}
+
+
+def runs_report(*, directory: Path) -> str:
+    """Compact report: fixed params, ablated params, and per-combo bucket links."""
+    manifest = read_json(path=directory / "manifest.json")
+    state = read_json(path=directory / "state.json")
+    if manifest is None or state is None:
+        raise ValueError(f"Not a saved iteration: {directory}")
+    fixed, grid = spec_params(directory=directory, manifest=manifest)
+
+    fixed_rows = [[key, format_param(value=value)] for key, value in fixed.items()]
+    grid_rows = [[key, format_param(value=value)] for key, value in grid.items()]
+    run_rows = []
+    for record in state.get("combos", []):
+        run_name = record.get("remote_run_name")
+        links = ([f"{S3_BUCKET}/checkpoints/act_v2/{run_name}/",
+                  f"{S3_BUCKET}/runs/act_v2/{run_name}/"] if run_name else ["-", "-"])
+        run_rows.append([record["id"], run_name or "-", *links])
+
+    sections = [
+        "## Runs\n\n" + render_table(
+            headers=["Combo", "Run name", "Checkpoints", "Runs"], rows=run_rows),
+        "## Fixed params\n\n" + render_table(
+            headers=["Param", "Value"], rows=fixed_rows),
+        "## Ablated params\n\n" + render_table(
+            headers=["Param", "Values"], rows=grid_rows),
+    ]
+    return "\n\n".join(sections) + "\n"
 
 
 def s3_objects(*, prefix: str, timeout: float = 120) -> list[dict] | None:
@@ -383,7 +445,7 @@ def report(*, directory: Path, combo: str | None, files: bool, no_s3: bool) -> s
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["report"])
+    parser.add_argument("mode", choices=["report", "runs"])
     parser.add_argument("directory", type=Path)
     parser.add_argument("--combo")
     parser.add_argument("--files", action="store_true")
@@ -394,7 +456,10 @@ def main() -> int:
         print(f"Not an iteration directory: {directory}", file=sys.stderr)
         return 2
     try:
-        print(report(directory=directory, combo=args.combo, files=args.files, no_s3=args.no_s3))
+        if args.mode == "runs":
+            print(runs_report(directory=directory))
+        else:
+            print(report(directory=directory, combo=args.combo, files=args.files, no_s3=args.no_s3))
     except ValueError as error:
         print(f"Blocked: {error}", file=sys.stderr)
         return 1

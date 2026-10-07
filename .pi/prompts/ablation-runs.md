@@ -1,21 +1,20 @@
 ---
-description: Report all recorded information for a saved ablation iteration in tables
-argument-hint: "[iteration-id-or-dir] [--combo <id>] [--files] [--no-s3]"
+description: List ablation run names, bucket links, and fixed/ablated params
+argument-hint: "[iteration-id-or-dir]"
 ---
 
-Print a read-only, all-tabular report for one saved ablation iteration. The
-optional selector is `$ARGUMENTS`; it may be an iteration ID or a local
-iteration directory, followed by any of `--combo <id>`, `--files`, or
-`--no-s3`. This command never writes files, downloads artifacts, mutates state,
-or calls Vast, and never prints sensitive instance records.
+Print a read-only list of an ablation iteration's runs. The optional selector is
+`$ARGUMENTS`: an iteration ID or a local iteration directory. This command never
+writes files, downloads artifacts, mutates state, or calls Vast, and never prints
+sensitive instance records.
 
 ## Select the iteration
 
-1. Parse `$ARGUMENTS` into an optional iteration selector (the first non-flag
-   token) and the optional flags `--combo <id>`, `--files`, `--no-s3`.
+1. Parse `$ARGUMENTS` as an optional iteration selector (the first non-flag
+   token).
 2. List candidate iterations: every `<spec>/<iteration>/` under
    `.vast-train-local/ablations/` whose `manifest.json` has `"kind": "sweep"`.
-   Include `--plan` iterations; they simply have no recorded TensorBoard URL.
+   Include `--plan` iterations; they simply have no recorded run names yet.
 3. If a selector is present, select the one candidate whose iteration ID or
    resolved directory path exactly matches it. If it matches zero or several
    candidates, report the valid iteration IDs and stop.
@@ -24,8 +23,7 @@ or calls Vast, and never prints sensitive instance records.
    per candidate, ordered newest first by iteration ID (`YYYYMMDDTHHMMSSZ-...`
    sorts lexicographically), and read fields with read-only tools:
    - `<iteration>/manifest.json`: `created_at`;
-   - `<iteration>/state.json`: `driver_status` and each combo `status`;
-   - `<iteration>/tensorboard/service.json`: `port` and `url` when present.
+   - `<iteration>/state.json`: `driver_status` and each combo `status`.
    Use these option fields:
    - label: `<spec-stem> · <iteration-id>`;
    - description: `created <created_at> · driver <driver_status> · <combo
@@ -40,20 +38,19 @@ Run the read-only helper once for the selected directory, with the path quoted:
 
 ```bash
 uv run --frozen python \
-  .pi/prompts/scripts/vast-train/ablation_runs.py report "$ITERATION_DIR" \
-  [--combo "$COMBO"] [--files] [--no-s3]
+  .pi/prompts/scripts/vast-train/ablation_runs.py runs "$ITERATION_DIR"
 ```
 
-Keep stdout and stderr visible. The helper prints these Markdown tables: the
-iteration summary, configs, execution, verification, local records, S3
-artifacts, S3 prefixes, TensorBoard cache, live progress for nonterminal combos,
-and — only with `--files` — a full local and S3 file inventory.
+Keep stdout and stderr visible. The helper prints exactly three Markdown tables:
+the runs (combo ID, run name, and the `s3://toy-act/checkpoints/act_v2/<run>/`
+and `s3://toy-act/runs/act_v2/<run>/` bucket links), the fixed params, and the
+params being ablated. The fixed and ablated params come from the sweep spec
+snapshot recorded in the iteration's `manifest.json`.
 
 ## Limits
 
-- Read-only: it lists files and runs non-mutating `aws s3 ls` only. It never
-  downloads, launches, reconciles, cleans up, or stops a service.
-- `--no-s3` skips the S3 artifact and inventory listings; `--files` expands full
-  object and file inventories.
+- Read-only: it reads only the saved manifest, state, and sweep spec snapshots.
+  It never lists S3, downloads, launches, reconciles, cleans up, or stops a
+  service.
 - Never print `instance.json`, `known_hosts`, `setup.env` values, credentials,
-  or presigned URLs. The helper reports names, sizes, and times only.
+  or presigned URLs. The helper reports run names and bucket prefixes only.

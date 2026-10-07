@@ -19,6 +19,14 @@ class ReportTests(unittest.TestCase):
         iteration = root / "ablations/example/20261007T000000Z-aaaaaaaaaaaa"
         configs = iteration / "configs"
         configs.mkdir(parents=True)
+        (iteration / "inputs").mkdir()
+        (iteration / "inputs/000-example.toml").write_text(
+            'description = "example"\n'
+            'group = "configs/train/act_v2/BS-32"\n'
+            "[fixed]\n"
+            "lr = 1e-05\n"
+            "[grid]\n"
+            "use_z = [true, false]\n")
         (configs / "a.toml").write_text(
             'version = "v4"\n'
             "action_chunk_size = 100\n"
@@ -49,6 +57,8 @@ class ReportTests(unittest.TestCase):
             "version": 1, "id": "20261007T000000Z-aaaaaaaaaaaa", "kind": "sweep",
             "created_at": "2026-10-07T00:00:00+00:00", "git_commit": "a" * 40,
             "source": "configs/sweep/example.toml",
+            "inputs": [{"path": "inputs/000-example.toml",
+                        "source": "configs/sweep/example.toml", "sha256": "b" * 64}],
             "combos": [{"id": "0000", "config": "configs/a.toml", "slug": "a"}]}))
         (iteration / "state.json").write_text(json.dumps({
             "version": 1, "driver_status": "handed_off",
@@ -64,6 +74,30 @@ class ReportTests(unittest.TestCase):
         (tensorboard / "sync-status.json").write_text(json.dumps(
             {"0000": {"checked_at": "2026-10-07T00:05:00+00:00", "ok": True, "run": "run-a"}}))
         return iteration
+
+    def test_format_param_renders_nested_values(self) -> None:
+        self.assertEqual(ablation_runs.format_param(value=[10, 100]), "10, 100")
+        self.assertEqual(ablation_runs.format_param(value={"episodes": 30, "seed": 42}),
+                         "episodes=30, seed=42")
+        self.assertEqual(ablation_runs.format_param(value=True), "true")
+        self.assertEqual(ablation_runs.format_param(value="datasets/x.hdf5"), "datasets/x.hdf5")
+
+    def test_runs_report_lists_params_and_bucket_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            iteration = self.make_iteration(root=Path(temporary))
+            text = ablation_runs.runs_report(directory=iteration)
+            self.assertIn("## Runs", text)
+            self.assertIn("## Fixed params", text)
+            self.assertIn("## Ablated params", text)
+            self.assertIn("s3://toy-act/checkpoints/act_v2/run-a/", text)
+            self.assertIn("s3://toy-act/runs/act_v2/run-a/", text)
+            self.assertIn("| use_z", text)
+            self.assertIn("| true, false", text)
+
+    def test_runs_report_rejects_unsaved_iteration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(ValueError, "Not a saved iteration"):
+                ablation_runs.runs_report(directory=Path(temporary))
 
     def test_table_alignment_and_headers(self) -> None:
         table = render_table(headers=["A", "BB"], rows=[["1", "2"], ["333", "4"]])
