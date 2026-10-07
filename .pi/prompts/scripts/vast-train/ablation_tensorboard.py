@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -97,6 +98,30 @@ def ensure_dashboard(iteration) -> None:
     journal.progress(text=f"Shared ablation TensorBoard: {service['url']} (S3-backed; updates are delayed)")
 
 
+def publish_snapshot(*, source: Path, destination: Path) -> None:
+    """Preserve the watched inode and append only a matching snapshot's growth."""
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not destination.exists():
+        temporary = source.with_name(source.name + ".publish")
+        shutil.copy2(source, temporary)
+        os.replace(temporary, destination)
+        return
+    previous_size = destination.stat().st_size
+    if source.stat().st_size < previous_size:
+        raise Blocked(f"Event snapshot shrank: {destination}")
+    # Fail closed if a snapshot rewrites history. Never silently replace an
+    # existing watched file, because TensorBoard holds its original inode open.
+    with source.open("rb") as incoming, destination.open("rb") as cached:
+        while chunk := cached.read(1024 * 1024):
+            if incoming.read(len(chunk)) != chunk:
+                raise Blocked(f"Event snapshot changed existing records: {destination}")
+        with destination.open("ab") as output:
+            shutil.copyfileobj(incoming, output)
+            output.flush()
+            os.fsync(output.fileno())
+    shutil.copystat(source, destination)
+
+
 def sync_once(*, directory: Path, journal: Journal) -> dict:
     """Use atomic state snapshots and only explicitly recorded run prefixes."""
     state = json.loads((directory / "state.json").read_text())
@@ -113,23 +138,73 @@ def sync_once(*, directory: Path, journal: Journal) -> dict:
             raise ValueError("Invalid TensorBoard combo ID")
         target = directory / "tensorboard" / "logs" / combo_id / run_name
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # AWS downloads via temporary files and rename. Keep those partial files
+        # outside the watched logdir; publish only successful downloads.
+        staging = directory / "tensorboard" / "staging" / combo_id / run_name
+        staging.mkdir(parents=True, exist_ok=True, mode=0o700)
         result = journal.run(args=["aws", "s3", "sync", f"s3://toy-act/runs/act_v2/{run_name}/",
-                                   str(target), "--exclude", "*", "--include", "*tfevents*",
+                                   str(staging), "--exclude", "*", "--include", "*tfevents*",
                                    "--only-show-errors", "--profile", PROFILE, "--region", REGION],
                              timeout=120, check=False, sensitive=True)
+        if result.returncode == 0:
+            for source in staging.rglob("*tfevents*"):
+                if not source.is_file() or source.name.endswith(".publish"):
+                    continue
+                destination = target / source.relative_to(staging)
+                if (destination.exists()
+                        and destination.stat().st_size == source.stat().st_size
+                        and destination.stat().st_mtime_ns == source.stat().st_mtime_ns):
+                    continue
+                publish_snapshot(source=source, destination=destination)
         results[combo_id] = {"run": run_name, "ok": result.returncode == 0, "checked_at": now()}
     write_json(path=directory / "tensorboard" / "sync-status.json", value=results)
     return results
 
 
+def refresh_dashboard(*, directory: Path) -> None:
+    """Recover only a saved dashboard; never provision or execute training."""
+    from iteration import Iteration
+
+    with lock(directory / "driver.lock"):
+        iteration = Iteration(directory=directory)
+        root = directory / "tensorboard"
+        service = json.loads((root / "service.json").read_text())
+        if service["directory"] != str(directory) or iteration.manifest["kind"] != "sweep":
+            raise Blocked("Dashboard does not belong to this sweep")
+        expected = {"server_session": f"ablate-tb-{directory.name}",
+                    "sync_session": f"ablate-sync-{directory.name}"}
+        journal = Journal(directory=root)
+        # Verify both sessions before stopping either one. Never touch unrelated
+        # services, even if a saved service record was modified.
+        for field, name in expected.items():
+            if service[field] != name:
+                raise Blocked("Unexpected dashboard session identity")
+            if session_exists(name=name):
+                owner = journal.run(args=["tmux", "show-options", "-v", "-t", name, "@iteration"])
+                if owner.stdout.strip() != str(directory):
+                    raise Blocked(f"Unrelated tmux session occupies {name}")
+        for name in expected.values():
+            if session_exists(name=name):
+                journal.run(args=["tmux", "kill-session", "-t", f"={name}"])
+        with lock(root / "sync.lock"):
+            results = sync_once(directory=directory, journal=journal)
+            journal.event(kind="tensorboard_refresh", results=results)
+            if not all(result["ok"] for result in results.values()):
+                raise Blocked(f"Dashboard download failed; see {root / 'driver.log'}")
+        ensure_dashboard(iteration)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["serve", "sync"])
+    parser.add_argument("mode", choices=["serve", "sync", "refresh"])
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     directory = args.directory.resolve()
     root = directory / "tensorboard"
+    if args.mode == "refresh":
+        refresh_dashboard(directory=directory)
+        return
     if args.mode == "serve":
         service = json.loads((root / "service.json").read_text())
         with (root / "server.log").open("a") as output:
@@ -137,7 +212,7 @@ def main() -> None:
             os.dup2(output.fileno(), 2)
             os.execv(sys.executable, [sys.executable, "-m", "tensorboard.main", "--logdir",
                                      str(root / "logs"), "--host", "127.0.0.1", "--port",
-                                     str(service["port"])])
+                                     str(service["port"]), "--reload_interval=5"])
     with lock(root / "sync.lock"):
         journal = Journal(directory=root)
         while True:

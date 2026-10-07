@@ -141,9 +141,21 @@ files are downloaded from the iteration's registered S3 run prefixes every
 30 seconds, so display updates lag remote backups. Services persist after
 handoff/completion for comparison and final uploads. Records, cached event
 files, server logs and sync status live under the iteration's `tensorboard/`.
-Occupied recorded ports or unrelated sessions are never stolen. Per-instance
-forwarding remains an internal handoff requirement; single-config invocations
-continue reporting their original forwarded URL. `--plan` starts no services.
+Occupied recorded ports or unrelated sessions are never stolen. Downloads are
+staged outside the watched logdir; successful snapshots append after checking
+the cached prefix matches, preserving the file TensorBoard is already reading.
+A completed sweep's dashboard can be refreshed without training or instance
+operations using:
+
+```bash
+uv run --frozen --only-group train python \
+  .pi/prompts/scripts/vast-train/ablation_tensorboard.py refresh "$ITERATION_DIR"
+```
+
+Refresh checks session ownership, restarts only that iteration's dashboard
+services, and retains its recorded port/cache. It does not reconcile outcomes.
+Per-instance forwarding remains an internal handoff requirement; single-config
+invocations continue reporting their original forwarded URL. `--plan` starts no services.
 
 Run the foreground driver with a bounded timeout appropriate to the dataset.
 On interruption, report the saved iteration ID/resume command; no implicit fresh

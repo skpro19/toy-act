@@ -73,6 +73,10 @@ iteration's recorded run prefixes from `s3://toy-act/runs/act_v2/<run>/`, using
 profile `toy-pickplace-backup`, and downloads only event files into distinct
 `tensorboard/logs/<combo>/<run>/` directories. It retries every 30 seconds,
 including after handoff and completion, so final uploads remain discoverable.
+Downloads are staged outside the watched log directory. Successful snapshots
+append to the cached event file after verifying its existing bytes match;
+shrinking or rewritten snapshots fail closed. This lets TensorBoard keep reading
+the same file instead of freezing on an older replaced file.
 Metrics lag the remote backup cadence (120-second pauses plus upload time),
 local synchronization and TensorBoard reload. This is not a real-time SSH feed.
 
@@ -82,6 +86,18 @@ recovers them against the same cache and recorded port. Port/session conflicts
 block recovery; never steal an occupied port or kill an unrelated service.
 Diagnostics live in `tensorboard/server.log`, `tensorboard/driver.log`,
 `tensorboard/events.jsonl`, and `tensorboard/sync-status.json` beneath the iteration.
+To refresh a completed iteration's dashboard without running training stages:
+
+```bash
+uv run --frozen --only-group train python \
+  .pi/prompts/scripts/vast-train/ablation_tensorboard.py refresh "$ITERATION_DIR"
+```
+
+This verifies ownership before restarting only that iteration's dashboard
+sessions, downloads its recorded event files, and reuses its saved port/cache.
+It never provisions, launches training, reconciles outcomes, or removes instances.
+An unrelated occupied port blocks recovery; no unrelated service is stopped.
+
 Report the **shared iteration URL** for all combos, not their internal forwarding
 URLs. Existing per-instance TensorBoard servers and forwarding remain internal
 handoff checks; the shared dashboard never authorizes instance cleanup.
