@@ -226,10 +226,16 @@ class IterationTests(LocalFixture):
         group = self.root / "group"
         group.mkdir()
         (group / "BASE.toml").write_text(
-            'version = "v4"\naction_loss = "l1"\nbatch_size = 8\nsteps = 10\n'
+            'version = "v4"\naction_chunk_size = 10\naction_loss = "l1"\n'
+            'batch_size = 8\nsteps = 10\n'
             'image_keys = ["agentview_image", "robot0_eye_in_hand_image"]\n'
             'dataset = "datasets/test.hdf5"\nlr = 0.0001\nseed = 0\nbeta = 0.01\n'
+            'beta_start = 0.0\nbeta_warmup_steps = 0\nuse_z = false\n'
             'checkpoint_every = 5\n[tensorboard]\n'
+            'activations = false\nbatch_metrics = true\ndenorm_l1 = false\n'
+            'epoch_metrics = false\neval = false\nhyperparams = false\n'
+            'latent = false\nlr = false\noptimizer = false\nranges = false\n'
+            'sensitivity = false\nthroughput = false\ntiming = false\n'
             '[rollout]\nepisodes = 30\nhorizon = 250\nseed = 0\n')
         self.source.write_text(f'group = "{group}"\n[grid]\nseed = [2, 1]\n')
         with patch.object(iteration, "git_preflight", return_value=COMMIT), \

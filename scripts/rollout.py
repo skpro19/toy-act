@@ -261,11 +261,22 @@ def training_config_from_checkpoint(*, checkpoint: dict) -> dict:
     return config
 
 
-def rollout_settings_from_checkpoint(*, checkpoint: dict) -> tuple[bool, tuple[str, ...]]:
+def rollout_settings_from_checkpoint(
+    *,
+    checkpoint: dict) -> tuple[bool, tuple[str, ...], int]:
     config = training_config_from_checkpoint(checkpoint=checkpoint)
     use_z = config["use_z"]
     image_keys = tuple(config["image_keys"])
-    return use_z, image_keys
+    action_chunk_size = config.get("action_chunk_size", ACTION_CHUNK_SIZE)
+    if (
+        not isinstance(action_chunk_size, int)
+        or isinstance(action_chunk_size, bool)
+        or action_chunk_size <= 0
+    ):
+        raise ValueError(
+            f"checkpoint config 'action_chunk_size' must be > 0, got {action_chunk_size!r}"
+        )
+    return use_z, image_keys, action_chunk_size
 
 
 def normalization_from_checkpoint(*, checkpoint: dict) -> NormalizationStats:
@@ -288,13 +299,14 @@ def load_model(
     checkpoint: dict,
     device: torch.device,
     use_z: bool,
+    action_chunk_size: int = ACTION_CHUNK_SIZE,
 ) -> tuple[ACTV2, NormalizationStats]:
     model = ACTV2(
         d_model=D_MODEL,
         nhead=N_HEAD,
         num_layers=NUM_LAYERS,
         z_dims=Z_DIMS,
-        action_chunk_size=ACTION_CHUNK_SIZE,
+        action_chunk_size=action_chunk_size,
         proprio_dims=PROPRIO_DIMS,
         use_z=use_z,
     )
@@ -435,6 +447,7 @@ def run_rollout(
     render: bool,
     video_writer,
     video_skip: int,
+    action_chunk_size: int = ACTION_CHUNK_SIZE,
     time_limit_s: float | None = None,
     window_title: str | None = None,
 ) -> dict[str, float | int | bool]:
@@ -447,7 +460,7 @@ def run_rollout(
     video_count = 0
 
     for step_idx in range(horizon):
-        if action_chunk is None or chunk_step >= ACTION_CHUNK_SIZE:
+        if action_chunk is None or chunk_step >= action_chunk_size:
             action_chunk = predict_action_chunk(
                 model=model,
                 obs=obs,
@@ -538,14 +551,20 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     checkpoint = load_checkpoint(checkpoint_path=args.checkpoint, device=device)
-    use_z, image_keys = rollout_settings_from_checkpoint(checkpoint=checkpoint)
-    model, normalization = load_model(checkpoint=checkpoint, device=device, use_z=use_z)
+    use_z, image_keys, action_chunk_size = rollout_settings_from_checkpoint(checkpoint=checkpoint)
+    model, normalization = load_model(
+        checkpoint=checkpoint,
+        device=device,
+        use_z=use_z,
+        action_chunk_size=action_chunk_size,
+    )
     camera_names = camera_names_from_image_keys(image_keys=image_keys)
 
     run_name = checkpoint.get("run_name")
     if run_name is not None:
         print(f"run_name => {run_name}")
     print(f"use_z => {use_z}")
+    print(f"action_chunk_size => {action_chunk_size}")
     print(f"image_keys => {list(image_keys)}")
     print(f"camera_names => {list(camera_names)}")
 
@@ -571,6 +590,7 @@ def main() -> None:
                 device=device,
                 normalization=normalization,
                 image_keys=image_keys,
+                action_chunk_size=action_chunk_size,
                 horizon=args.horizon,
                 terminate_on_success=args.terminate_on_success,
                 render=on_screen,

@@ -69,6 +69,7 @@ class CheckpointEvaluationTest(unittest.TestCase):
                         episodes=30,
                         horizon=250,
                         seed=0,
+                        action_chunk_size=10,
                     )
 
             events = EventAccumulator(directory)
@@ -90,6 +91,7 @@ class DatasetResolutionTest(unittest.TestCase):
     def base_config(self) -> dict:
         return {
             "version": "v4",
+            "action_chunk_size": 10,
             "action_loss": "l1",
             "batch_size": 8,
             "steps": 100000,
@@ -98,8 +100,14 @@ class DatasetResolutionTest(unittest.TestCase):
             "lr": 1e-4,
             "seed": 0,
             "beta": 0.01,
+            "beta_start": 0.0,
+            "beta_warmup_steps": 0,
+            "use_z": True,
             "checkpoint_every": 2000,
-            "tensorboard": {},
+            "tensorboard": {
+                namespace: True
+                for namespace in train_v2.TENSORBOARD_NAMESPACES
+            },
             "rollout": {"episodes": 30, "horizon": 250, "seed": 0},
         }
 

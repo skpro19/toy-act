@@ -21,7 +21,6 @@ from tqdm import tqdm
 
 from scripts.dataset import CanPhDataset, NormalizationStats
 from scripts.models.act_v2.config import (
-    ACTION_CHUNK_SIZE,
     D_MODEL,
     IMG_DIMS,
     JOINT_DIMS,
@@ -58,6 +57,7 @@ DATALOADER_NUM_WORKERS = 4
 DATALOADER_TIMEOUT_SECONDS = 120
 
 CONFIG_KEYS = (
+    "action_chunk_size",
     "action_loss",
     "batch_size",
     "steps",
@@ -66,6 +66,9 @@ CONFIG_KEYS = (
     "lr",
     "seed",
     "beta",
+    "beta_start",
+    "beta_warmup_steps",
+    "use_z",
     "checkpoint_every",
     "tensorboard",
     "rollout",
@@ -105,6 +108,7 @@ ACTIVATION_HOOK_TAGS = (
 )
 
 RUN_NAME_FIELDS = (
+    ("action_chunk_size", "k", "{:d}"),
     ("batch_size", "bs", "{:d}"),
     ("lr", "lr", "{:.0e}"),
     ("beta", "beta", "{:g}"),
@@ -154,9 +158,15 @@ def validate_config(*, config: dict) -> dict:
             f"config version must be {CONFIG_VERSION!r}, got {version!r}"
         )
 
-    config.setdefault("beta_start", 0.0)
-    config.setdefault("beta_warmup_steps", 0)
-    config.setdefault("use_z", True)
+    action_chunk_size = config["action_chunk_size"]
+    if (
+        not isinstance(action_chunk_size, int)
+        or isinstance(action_chunk_size, bool)
+        or action_chunk_size <= 0
+    ):
+        raise ValueError(
+            f"action_chunk_size must be > 0, got {action_chunk_size!r}"
+        )
 
     dataset = config["dataset"]
     if not isinstance(dataset, str) or not dataset:
@@ -241,9 +251,13 @@ def validate_tensorboard_flags(*, tensorboard: dict) -> dict:
             f"unknown tensorboard namespaces {unknown}; allowed namespaces: {allowed}"
         )
 
+    missing = sorted(set(TENSORBOARD_NAMESPACES) - set(tensorboard))
+    if missing:
+        raise KeyError(f"tensorboard missing required namespaces: {missing}")
+
     flags = {}
     for namespace in TENSORBOARD_NAMESPACES:
-        value = tensorboard.get(namespace, True)
+        value = tensorboard[namespace]
         if not isinstance(value, bool):
             raise ValueError(
                 f"tensorboard.{namespace} must be a boolean, got {value!r}"
@@ -555,7 +569,8 @@ def evaluate_and_log_checkpoint(
     tensorboard: dict,
     episodes: int,
     horizon: int,
-    seed: int) -> Any:
+    seed: int,
+    action_chunk_size: int,) -> Any:
     """Evaluate a saved model without changing the training RNG or model mode."""
     run_eval = tensorboard["eval"]
     summary = None
@@ -592,6 +607,7 @@ def evaluate_and_log_checkpoint(
                         device=device,
                         normalization=normalization,
                         image_keys=image_keys,
+                        action_chunk_size=action_chunk_size,
                         horizon=horizon,
                         terminate_on_success=True,
                         render=False,
@@ -648,6 +664,7 @@ def train(
     seed = config["seed"]
     batch_size = config["batch_size"]
     lr = config["lr"]
+    action_chunk_size = config["action_chunk_size"]
 
     tensorboard = config["tensorboard"]
     log_activations = tensorboard["activations"]
@@ -674,7 +691,7 @@ def train(
     can_ph_dataset = CanPhDataset(
         file=str(dataset),
         image_keys=tuple(config["image_keys"]),
-        k=ACTION_CHUNK_SIZE,
+        k=action_chunk_size,
     )
     dataloader_generator = make_dataloader_generator(seed=seed)
     can_ph_dataloader = DataLoader(
@@ -695,7 +712,7 @@ def train(
         num_layers=NUM_LAYERS,
         z_dims=Z_DIMS,
         proprio_dims=PROPRIO_DIMS,
-        action_chunk_size=ACTION_CHUNK_SIZE,
+        action_chunk_size=action_chunk_size,
         use_z=config["use_z"],
     ).to(device=device)
 
@@ -949,6 +966,7 @@ def train(
                     episodes=rollout["episodes"],
                     horizon=rollout["horizon"],
                     seed=rollout["seed"],
+                    action_chunk_size=action_chunk_size,
                 )
                 last_evaluated_step = global_step
                 train_samples = 0
@@ -1028,6 +1046,7 @@ def train(
             episodes=rollout["episodes"],
             horizon=rollout["horizon"],
             seed=rollout["seed"],
+            action_chunk_size=action_chunk_size,
         )
 
     if eval_env is not None:

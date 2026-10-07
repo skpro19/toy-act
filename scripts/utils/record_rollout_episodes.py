@@ -145,6 +145,7 @@ def record_episode(
     normalization,
     image_keys: tuple[str, ...],
     camera_names: tuple[str, ...],
+    action_chunk_size: int = ACTION_CHUNK_SIZE,
     horizon: int,
     terminate_on_success: bool,
     frame_skip: int,
@@ -158,7 +159,7 @@ def record_episode(
     chunk_step = 0
 
     for step_index in range(horizon):
-        if action_chunk is None or chunk_step >= ACTION_CHUNK_SIZE:
+        if action_chunk is None or chunk_step >= action_chunk_size:
             action_chunk = predict_action_chunk(
                 model=model,
                 obs=obs,
@@ -217,11 +218,12 @@ def record_run(
 
     print(f"[{run_name}] checkpoint {checkpoint.name}")
     checkpoint_data = load_checkpoint(checkpoint_path=checkpoint, device=device)
-    use_z, image_keys = rollout_settings_from_checkpoint(checkpoint=checkpoint_data)
+    use_z, image_keys, action_chunk_size = rollout_settings_from_checkpoint(checkpoint=checkpoint_data)
     model, normalization = load_model(
         checkpoint=checkpoint_data,
         device=device,
         use_z=use_z,
+        action_chunk_size=action_chunk_size,
     )
     camera_names = camera_names_from_image_keys(image_keys=image_keys)
 
@@ -254,6 +256,7 @@ def record_run(
                 normalization=normalization,
                 image_keys=image_keys,
                 camera_names=camera_names,
+                action_chunk_size=action_chunk_size,
                 horizon=args.horizon,
                 terminate_on_success=True,
                 frame_skip=args.frame_skip,

@@ -1,4 +1,5 @@
 version = "v4"
+action_chunk_size = 10
 action_loss = "l1"
 batch_size = 32
 steps = 100000
