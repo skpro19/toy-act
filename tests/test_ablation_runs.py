@@ -90,8 +90,9 @@ class ReportTests(unittest.TestCase):
             self.assertIn("## Runs", text)
             self.assertIn("## Fixed params", text)
             self.assertIn("## Ablated params", text)
-            self.assertIn("s3://toy-act/checkpoints/act_v2/run-a/", text)
+            self.assertNotIn("Checkpoints folder", text)
             self.assertIn("s3://toy-act/runs/act_v2/run-a/", text)
+            self.assertNotIn("s3://toy-act/checkpoints/act_v2/run-a/", text)
             self.assertIn("| use_z", text)
             self.assertIn("| true, false", text)
 

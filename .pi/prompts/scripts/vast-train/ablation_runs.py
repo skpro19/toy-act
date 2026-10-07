@@ -235,7 +235,7 @@ def started_run_names(*, directory: Path, manifest: dict, state: dict) -> list[s
 
 
 def runs_report(*, directory: Path) -> str:
-    """Compact report: fixed params, ablated params, and per-run bucket folders."""
+    """Compact report: per-run bucket folders plus fixed and ablated params."""
     manifest = read_json(path=directory / "manifest.json")
     state = read_json(path=directory / "state.json")
     if manifest is None or state is None:
@@ -244,17 +244,16 @@ def runs_report(*, directory: Path) -> str:
     names = started_run_names(directory=directory, manifest=manifest, state=state)
 
     fixed_rows = [[key, format_param(value=value)] for key, value in fixed.items()]
-    grid_rows = [[key, format_param(value=value)] for key, value in grid.items()]
-    run_rows = [[name, f"{CHECKPOINT_PREFIX}/{name}/", f"{RUNS_PREFIX}/{name}/"]
-                for name in names]
+    ablated_rows = [[key, format_param(value=value)] for key, value in grid.items()]
+    run_rows = [[name, f"{RUNS_PREFIX}/{name}/"] for name in names]
 
     sections = [
-        "## Runs\n\n" + render_table(
-            headers=["Run name", "Checkpoints folder", "Runs folder"], rows=run_rows),
         "## Fixed params\n\n" + render_table(
             headers=["Param", "Value"], rows=fixed_rows),
         "## Ablated params\n\n" + render_table(
-            headers=["Param", "Values"], rows=grid_rows),
+            headers=["Param", "Values"], rows=ablated_rows),
+        "## Runs\n\n" + render_table(
+            headers=["Run name", "Runs folder"], rows=run_rows),
     ]
     return "\n\n".join(sections) + "\n"
 

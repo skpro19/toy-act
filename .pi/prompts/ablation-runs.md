@@ -17,11 +17,12 @@ sensitive instance records.
    Include `--plan` iterations; they simply have no recorded run names yet.
 3. If a selector is present, select the one candidate whose iteration ID or
    resolved directory path exactly matches it. If it matches zero or several
-   candidates, report the valid iteration IDs and stop.
+   candidates, report the 5 most recent valid iteration IDs and stop.
 4. If no selector is present, **always ask** with the `question` tool before
-   doing anything else — even when only one candidate exists. Build one option
-   per candidate, ordered newest first by iteration ID (`YYYYMMDDTHHMMSSZ-...`
-   sorts lexicographically), and read fields with read-only tools:
+   doing anything else — even when only one candidate exists. Consider only the
+   **5 most recent** candidates, ordered newest first by iteration ID
+   (`YYYYMMDDTHHMMSSZ-...` sorts lexicographically), and read fields with
+   read-only tools:
    - `<iteration>/manifest.json`: `created_at`;
    - `<iteration>/state.json`: `driver_status` and each combo `status`.
    Use these option fields:
@@ -41,16 +42,18 @@ uv run --frozen python \
   .pi/prompts/scripts/vast-train/ablation_runs.py runs "$ITERATION_DIR"
 ```
 
-Keep stdout and stderr visible. The helper prints exactly three Markdown tables:
+Keep stdout and stderr visible. The helper prints the run details for the
+selected iteration as exactly three Markdown tables, in this order — they are
+the entire result, so do not reformat them as prose or lists:
 
+- **Fixed params** — the `[fixed]` rows from the sweep spec snapshot recorded
+  in the iteration's `manifest.json`.
+- **Ablated params** — the `[grid]` rows from the same snapshot.
 - **Runs** — one row per run started by this iteration, newest first, with its
-  `s3://toy-act/checkpoints/act_v2/<run>/` and `s3://toy-act/runs/act_v2/<run>/`
-  folder locations. Runs are collected from `state.json`, each combo's local
-  `handoff.json`/`report.txt` (for runs that started but failed before handoff),
-  and the two S3 prefixes filtered by the iteration's `-i<iteration-hash>` run
-  suffix.
-- **Fixed params** and **Ablated params** — the `[fixed]` and `[grid]` tables
-  from the sweep spec snapshot recorded in the iteration's `manifest.json`.
+  `s3://toy-act/runs/act_v2/<run>/` folder location. Runs are collected from
+  `state.json`, each combo's local `handoff.json`/`report.txt` (for runs that
+  started but failed before handoff), and the two S3 prefixes filtered by the
+  iteration's `-i<iteration-hash>` run suffix.
 
 ## Limits
 
