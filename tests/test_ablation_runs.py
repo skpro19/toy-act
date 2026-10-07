@@ -85,7 +85,8 @@ class ReportTests(unittest.TestCase):
     def test_runs_report_lists_params_and_bucket_links(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             iteration = self.make_iteration(root=Path(temporary))
-            text = ablation_runs.runs_report(directory=iteration)
+            with patch.object(ablation_runs, "s3_folders", return_value=set()):
+                text = ablation_runs.runs_report(directory=iteration)
             self.assertIn("## Runs", text)
             self.assertIn("## Fixed params", text)
             self.assertIn("## Ablated params", text)
@@ -93,6 +94,26 @@ class ReportTests(unittest.TestCase):
             self.assertIn("s3://toy-act/runs/act_v2/run-a/", text)
             self.assertIn("| use_z", text)
             self.assertIn("| true, false", text)
+
+    def test_started_run_names_unions_state_and_s3(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            iteration = self.make_iteration(root=Path(temporary))
+            discovered = {"2026-10-07_00-10-00_b-iaaaaaaaaaaaa",
+                          "2026-10-07_00-20-00_c-iaaaaaaaaaaaa"}
+            with patch.object(ablation_runs, "s3_folders", return_value=discovered) as folders:
+                names = ablation_runs.started_run_names(
+                    directory=iteration,
+                    manifest=ablation_runs.read_json(path=iteration / "manifest.json"),
+                    state=ablation_runs.read_json(path=iteration / "state.json"))
+            self.assertEqual(set(names), discovered | {"run-a"})
+            self.assertEqual(folders.call_count, 2)
+
+    def test_run_name_from_record_recovers_from_report_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary)
+            (run_dir / "report.txt").write_text("run_name: recovered-run\n")
+            record = {"run_dir": str(run_dir), "status": "failed"}
+            self.assertEqual(ablation_runs.run_name_from_record(record=record), "recovered-run")
 
     def test_runs_report_rejects_unsaved_iteration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

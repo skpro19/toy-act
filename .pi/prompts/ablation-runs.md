@@ -42,15 +42,23 @@ uv run --frozen python \
 ```
 
 Keep stdout and stderr visible. The helper prints exactly three Markdown tables:
-the runs (combo ID, run name, and the `s3://toy-act/checkpoints/act_v2/<run>/`
-and `s3://toy-act/runs/act_v2/<run>/` bucket links), the fixed params, and the
-params being ablated. The fixed and ablated params come from the sweep spec
-snapshot recorded in the iteration's `manifest.json`.
+
+- **Runs** — one row per run started by this iteration, newest first, with its
+  `s3://toy-act/checkpoints/act_v2/<run>/` and `s3://toy-act/runs/act_v2/<run>/`
+  folder locations. Runs are collected from `state.json`, each combo's local
+  `handoff.json`/`report.txt` (for runs that started but failed before handoff),
+  and the two S3 prefixes filtered by the iteration's `-i<iteration-hash>` run
+  suffix.
+- **Fixed params** and **Ablated params** — the `[fixed]` and `[grid]` tables
+  from the sweep spec snapshot recorded in the iteration's `manifest.json`.
 
 ## Limits
 
-- Read-only: it reads only the saved manifest, state, and sweep spec snapshots.
-  It never lists S3, downloads, launches, reconciles, cleans up, or stops a
-  service.
+- Read-only: it reads saved manifest, state, and sweep spec snapshots, and runs
+  non-mutating `aws s3 ls` on the two iteration prefixes. It never downloads,
+  launches, reconciles, cleans up, or stops a service.
+- The S3 listings are non-recursive folder listings; use the `report --files`
+  mode for a full object inventory. A failed S3 listing falls back to the
+  locally recorded run names without failing the command.
 - Never print `instance.json`, `known_hosts`, `setup.env` values, credentials,
   or presigned URLs. The helper reports run names and bucket prefixes only.

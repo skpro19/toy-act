@@ -23,6 +23,8 @@ from workflow_common import PROFILE, REGION
 
 FINAL = {"done", "failed", "verification_failed"}
 S3_BUCKET = "s3://toy-act"
+CHECKPOINT_PREFIX = f"{S3_BUCKET}/checkpoints/act_v2"
+RUNS_PREFIX = f"{S3_BUCKET}/runs/act_v2"
 PROGRESS_RE = re.compile(
     r"progress: epoch (?P<epoch>\d+) step (?P<step>\d+)/(?P<total>\d+).*?loss=(?P<loss>[\d.]+)")
 
@@ -179,26 +181,76 @@ def spec_params(*, directory: Path, manifest: dict) -> tuple[dict, dict]:
     return {}, {}
 
 
+def run_name_from_record(*, record: dict) -> str | None:
+    """Recover a started run's name from state or its local run records.
+
+    ``remote_run_name`` is recorded only once handoff passes, so a run that
+    started and then failed can still be named by `handoff.json` or `report.txt`
+    in its run directory.
+    """
+    if record.get("remote_run_name"):
+        return record["remote_run_name"]
+    run_dir = Path(record["run_dir"]) if record.get("run_dir") else None
+    if run_dir is None:
+        return None
+    handoff = read_json(path=run_dir / "handoff.json") or {}
+    if handoff.get("run_name"):
+        return handoff["run_name"]
+    return read_report(run_dir=run_dir).get("run_name")
+
+
+def s3_folders(*, prefix: str, timeout: float = 120) -> set[str] | None:
+    """List immediate child folder names under a prefix; None if untrusted."""
+    try:
+        result = subprocess.run(
+            ["aws", "s3", "ls", f"{prefix}/", "--profile", PROFILE, "--region", REGION],
+            capture_output=True, text=True, timeout=timeout, env=dict(os.environ), check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    folders = set()
+    for line in result.stdout.splitlines():
+        if line.lstrip().startswith("PRE "):
+            folders.add(line.split("PRE ", 1)[1].strip().rstrip("/"))
+    return folders
+
+
+def started_run_names(*, directory: Path, manifest: dict, state: dict) -> list[str]:
+    """Every run started by this iteration, newest first.
+
+    A run is identified by its recorded name and by the S3 folders it wrote.
+    Iteration run names all end with `-i<iteration-hash>`, so the bucket listing
+    is filtered by that marker.
+    """
+    names = {name for name in (run_name_from_record(record=record)
+                               for record in state.get("combos", [])) if name}
+    iteration_id = manifest.get("id", directory.name)
+    marker = f"-i{iteration_id.rsplit('-', 1)[-1]}"
+    for prefix in (CHECKPOINT_PREFIX, RUNS_PREFIX):
+        folders = s3_folders(prefix=prefix)
+        if folders is not None:
+            names |= {name for name in folders if name.endswith(marker)}
+    return sorted(names, reverse=True)
+
+
 def runs_report(*, directory: Path) -> str:
-    """Compact report: fixed params, ablated params, and per-combo bucket links."""
+    """Compact report: fixed params, ablated params, and per-run bucket folders."""
     manifest = read_json(path=directory / "manifest.json")
     state = read_json(path=directory / "state.json")
     if manifest is None or state is None:
         raise ValueError(f"Not a saved iteration: {directory}")
     fixed, grid = spec_params(directory=directory, manifest=manifest)
+    names = started_run_names(directory=directory, manifest=manifest, state=state)
 
     fixed_rows = [[key, format_param(value=value)] for key, value in fixed.items()]
     grid_rows = [[key, format_param(value=value)] for key, value in grid.items()]
-    run_rows = []
-    for record in state.get("combos", []):
-        run_name = record.get("remote_run_name")
-        links = ([f"{S3_BUCKET}/checkpoints/act_v2/{run_name}/",
-                  f"{S3_BUCKET}/runs/act_v2/{run_name}/"] if run_name else ["-", "-"])
-        run_rows.append([record["id"], run_name or "-", *links])
+    run_rows = [[name, f"{CHECKPOINT_PREFIX}/{name}/", f"{RUNS_PREFIX}/{name}/"]
+                for name in names]
 
     sections = [
         "## Runs\n\n" + render_table(
-            headers=["Combo", "Run name", "Checkpoints", "Runs"], rows=run_rows),
+            headers=["Run name", "Checkpoints folder", "Runs folder"], rows=run_rows),
         "## Fixed params\n\n" + render_table(
             headers=["Param", "Value"], rows=fixed_rows),
         "## Ablated params\n\n" + render_table(
