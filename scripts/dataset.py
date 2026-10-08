@@ -96,13 +96,13 @@ def validate_image_keys(*, hdf5: h5py.File, image_keys: tuple[str, ...]) -> None
                 )
 
 
-def compute_normalization_stats(*, hdf5: h5py.File, k: int) -> NormalizationStats:
+def compute_normalization_stats(*, hdf5: h5py.File) -> NormalizationStats:
     proprio_values = []
     action_values = []
 
     for demo in hdf5["data"].values():
         num_timesteps = int(demo.attrs["num_samples"])
-        num_samples = num_timesteps - k
+        num_samples = num_timesteps
 
         proprio_values.append(
             build_proprio(
@@ -115,8 +115,7 @@ def compute_normalization_stats(*, hdf5: h5py.File, k: int) -> NormalizationStat
             joint_pos=demo["next_obs/robot0_joint_pos"][:],
             gripper_qpos=demo["next_obs/robot0_gripper_qpos"][:],
         )
-        for offset in range(k):
-            action_values.append(next_actions[offset : offset + num_samples])
+        action_values.append(next_actions[:num_samples])
 
     proprio = np.concatenate(proprio_values, axis=0).astype(np.float64)
     actions = np.concatenate(action_values, axis=0).astype(np.float64)
@@ -142,14 +141,24 @@ class CanPhDataset(Dataset):
         self._hdf5: h5py.File | None = None
         with h5py.File(file, "r") as hdf5:
             validate_image_keys(hdf5=hdf5, image_keys=image_keys)
+            self.demo_num_timesteps = self._build_demo_num_timesteps(hdf5=hdf5)
             self.samples = self._build_sample_index(hdf5=hdf5)
-            self.normalization = compute_normalization_stats(hdf5=hdf5, k=k)
+            self.normalization = compute_normalization_stats(hdf5=hdf5)
 
     def _get_hdf5(self) -> h5py.File:
         # Open lazily so each DataLoader worker gets its own fork-safe handle.
         if self._hdf5 is None:
             self._hdf5 = h5py.File(self.file, "r")
         return self._hdf5
+
+    def _build_demo_num_timesteps(self, *, hdf5: h5py.File) -> dict[str, int]:
+        data = hdf5["data"]
+        demo_names = sorted(data.keys(), key=lambda name: int(name.split("_")[1]))
+        lengths: dict[str, int] = {}
+        for demo_name in demo_names:
+            demo = data[demo_name]
+            lengths[demo_name] = int(demo.attrs["num_samples"])
+        return lengths
 
     def _build_sample_index(self, *, hdf5: h5py.File) -> list[tuple[str, int]]:
         data = hdf5["data"]
@@ -159,7 +168,8 @@ class CanPhDataset(Dataset):
         for demo_name in demo_names:
             demo = data[demo_name]
             num_timesteps = int(demo.attrs["num_samples"])
-            for timestep in range(num_timesteps - self.k):
+            # for timestep in range(num_timesteps - self.k):
+            for timestep in range(num_timesteps):
                 samples.append((demo_name, timestep))
         return samples
 
@@ -185,6 +195,14 @@ class CanPhDataset(Dataset):
             gripper_qpos=target_gripper_qpos,
         )
 
+        if target_actions.shape[0] < self.k:
+            pad = np.zeros((1, PROPRIO_DIMS), dtype=np.float32)
+            diff = self.k - target_actions.shape[0]
+            target_actions = np.concatenate(
+                [target_actions, np.repeat(pad, repeats=diff, axis=0)],
+                axis=0,
+            )
+
         if proprio.shape != (PROPRIO_DIMS,):
             raise ValueError(f"expected proprio shape ({PROPRIO_DIMS},), got {proprio.shape}")
         if target_actions.shape != (self.k, PROPRIO_DIMS):
@@ -195,10 +213,19 @@ class CanPhDataset(Dataset):
         proprio = self.normalization.normalize_proprio(value=proprio)
         target_actions = self.normalization.normalize_action(value=target_actions)
 
+        action_mask = torch.ones(self.k)
+        N = self.demo_num_timesteps[demo_name]
+
+        # N=3, idx=0 , k=4
+        if timestep + self.k > N:
+            overflow = timestep  + self.k - N
+            action_mask[-overflow:] = 0
+
         return {
             "images": images_to_tensor(images=image_frames),
             "proprio": torch.from_numpy(proprio).unsqueeze(0),
             "target_actions": torch.from_numpy(target_actions),
             "demo_name": demo_name,
             "timestep": timestep,
+            "action_mask": action_mask
         }
