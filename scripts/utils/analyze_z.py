@@ -1,10 +1,10 @@
 """Measure how the ACT v2 CVAE latent varies across dataset samples.
 
-Loads an existing ACT v2 checkpoint and runs the training-time forward pass over
+Loads an existing ACT v2 checkpoint and runs its masked CVAE posterior over
 a seeded random subset of CanPhDataset samples, recording the CVAE encoder
 outputs (mu, log sigma^2) per sample alongside (demo_name, timestep).
 
-The deterministic latent is z = mu (epsilon = 0), per notes/z-debug.md.
+Only posterior statistics are collected; no latent sampling or policy decoding is needed.
 """
 
 from __future__ import annotations
@@ -85,13 +85,14 @@ def load_model(*, checkpoint_path: Path, device: torch.device) -> tuple[ACTV2, N
     use_z = True
     if train_config is not None:
         use_z = bool(train_config.get("use_z", True))
+    action_chunk_size = int((train_config or {}).get("action_chunk_size", ACTION_CHUNK_SIZE))
     model = ACTV2(
         d_model=D_MODEL,
         nhead=N_HEAD,
         num_layers=NUM_LAYERS,
         z_dims=Z_DIMS,
         proprio_dims=PROPRIO_DIMS,
-        action_chunk_size=ACTION_CHUNK_SIZE,
+        action_chunk_size=action_chunk_size,
         use_z=use_z,
     )
     model.load_state_dict(checkpoint["model"])
@@ -117,6 +118,8 @@ def per_row_kl(*, mu: np.ndarray, log_sigma_x2: np.ndarray) -> np.ndarray:
 
 
 def collect_latents(*, model: ACTV2, dataset: CanPhDataset, indices: np.ndarray, batch_size: int, device: torch.device) -> dict:
+    if not model.use_z:
+        raise ValueError("latent analysis requires a checkpoint with use_z=True")
     subset = Subset(dataset, indices.tolist())
     loader = DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -129,9 +132,11 @@ def collect_latents(*, model: ACTV2, dataset: CanPhDataset, indices: np.ndarray,
         for batch in tqdm(loader, desc="forward"):
             proprio = batch["proprio"].to(device=device)
             actions = batch["target_actions"].to(device=device)
-            img = batch["image"].to(device=device)
+            action_mask = batch["action_mask"].to(device=device)
 
-            _, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
+            mu, log_sigma_x2 = model.posterior(
+                proprio=proprio, actions=actions, mask=action_mask,
+            )
 
             mu_rows.append(mu.squeeze(1).detach().cpu().numpy())
             log_sigma_x2_rows.append(log_sigma_x2.squeeze(1).detach().cpu().numpy())
@@ -333,11 +338,16 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device => {device}")
 
-    model, _, train_config = load_model(checkpoint_path=args.checkpoint, device=device)
-    dataset_kwargs: dict = {"file": str(args.dataset), "k": ACTION_CHUNK_SIZE}
-    if train_config is not None and train_config.get("image_keys"):
-        dataset_kwargs["image_keys"] = tuple(str(key) for key in train_config["image_keys"])
-    dataset = CanPhDataset(**dataset_kwargs)
+    model, normalization, train_config = load_model(checkpoint_path=args.checkpoint, device=device)
+    if not model.use_z:
+        raise ValueError("latent analysis requires a checkpoint with use_z=True")
+    image_keys = (train_config or {}).get("image_keys", ["agentview_image"])
+    dataset = CanPhDataset(
+        file=str(args.dataset), k=model.k,
+        image_keys=tuple(str(key) for key in image_keys),
+    )
+    # Analyze inputs using the scaling the checkpoint was trained with.
+    dataset.normalization = normalization
 
     indices = make_subset_indices(num_samples=len(dataset), limit=args.limit, seed=args.seed)
     print(f"analyzing {len(indices)} / {len(dataset)} samples")

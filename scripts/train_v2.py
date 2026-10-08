@@ -852,7 +852,12 @@ def train(
                 probe_images = img[:SENSITIVITY_PROBE_SIZE].detach().clone()
                 probe_proprio = proprio[:SENSITIVITY_PROBE_SIZE].detach().clone()
 
-            pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
+            pred_actions, mu, log_sigma_x2 = model(
+                proprio=proprio,
+                actions=actions,
+                img=img,
+                action_mask=action_mask,
+            )
 
             per_step_action_loss = action_loss_fn(pred_actions, actions)
             action_loss = get_masked_action_loss(per_step_action_loss, action_mask)
@@ -902,6 +907,9 @@ def train(
                 if log_denorm_l1 or log_ranges:
                     pred_physical = pred_actions.detach() * action_std + action_mean
                     target_physical = actions * action_std + action_mean
+                    valid_action_steps = action_mask > 0
+                    pred_physical = pred_physical[valid_action_steps]
+                    target_physical = target_physical[valid_action_steps]
                     pred_joint = pred_physical[..., :JOINT_DIMS]
                     pred_gripper = pred_physical[..., JOINT_DIMS:]
                     target_joint = target_physical[..., :JOINT_DIMS]
@@ -924,7 +932,7 @@ def train(
                 if log_latent:
                     mu_norm = mu.detach().float().norm().item()
                     log_sigma_x2_mean = log_sigma_x2.detach().mean().item()
-                    sigma_mean = log_sigma_x2.detach().exp().mean().item()
+                    sigma_mean = (0.5 * log_sigma_x2.detach()).exp().mean().item()
 
                 if log_batch_metrics and batch_loss > 0.0:
                     batch_kl_fraction = batch_weighted_kl_loss / batch_loss

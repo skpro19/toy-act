@@ -66,7 +66,13 @@ class ACTV2(nn.Module):
         self.cls = nn.Parameter(torch.randn(1,self.d_model))
         self.action_head = nn.Linear(self.d_model, self.proprio_dims)
 
-    def posterior(self, *, proprio: torch.Tensor, actions: torch.Tensor):
+    def posterior(
+        self,
+        *,
+        proprio: torch.Tensor,
+        actions: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ):
         """CVAE posterior q(z | proprio, action_chunk): returns (mu, log_sigma_x2)."""
         B, _, _ = proprio.shape
 
@@ -76,7 +82,20 @@ class ACTV2(nn.Module):
 
         src_cvae_encoder = torch.concat([cls, proprio_tokens, action_tokens], dim=1)
 
-        return self.cvae_encoder(src=src_cvae_encoder)
+        padding_mask = None
+        if mask is not None:
+            if mask.dim() == 1:
+                mask = mask.unsqueeze(0).expand(B, -1)
+            invalid_action_steps = mask <= 0
+            keep_prefix = torch.zeros(
+                B,
+                2,
+                dtype=torch.bool,
+                device=mask.device,
+            )
+            padding_mask = torch.cat([keep_prefix, invalid_action_steps], dim=1)
+
+        return self.cvae_encoder(src=src_cvae_encoder, mask=padding_mask)
 
     def decode_from_tokens(
         self,
@@ -128,7 +147,13 @@ class ACTV2(nn.Module):
             use_z=use_z,
         )
 
-    def forward(self, proprio: torch.Tensor, actions: torch.Tensor, img: torch.Tensor):
+    def forward(
+        self,
+        proprio: torch.Tensor,
+        actions: torch.Tensor,
+        img: torch.Tensor,
+        action_mask: torch.Tensor | None = None,
+    ):
 
         proprio_tokens = self.proprio_encoder(proprio)
         img_tokens = self.image_encoder(img)
@@ -138,7 +163,9 @@ class ACTV2(nn.Module):
         z = None
         if self.use_z:
             mu, log_sigma_x2 = self.posterior(
-                proprio=proprio, actions=actions,
+                proprio=proprio,
+                actions=actions,
+                mask=action_mask,
             )
             z = mu + torch.randn_like(mu) * torch.sqrt(torch.exp(log_sigma_x2))
 

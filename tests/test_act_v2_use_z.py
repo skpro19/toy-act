@@ -17,8 +17,15 @@ class TinyPosterior(nn.Module):
         super().__init__()
         self.head = nn.Linear(8, 4)
 
-    def forward(self, *, src: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        stats = self.head(src.mean(dim=1, keepdim=True))
+    def forward(
+        self, *, src: torch.Tensor,
+        mask: torch.Tensor | None = None,) -> tuple[torch.Tensor, torch.Tensor]:
+        if mask is None:
+            pooled = src.mean(dim=1, keepdim=True)
+        else:
+            valid = (~mask).unsqueeze(-1)
+            pooled = (src * valid).sum(dim=1, keepdim=True) / valid.sum(dim=1, keepdim=True)
+        stats = self.head(pooled)
         return stats[..., :2], stats[..., 2:]
 
 
@@ -103,6 +110,17 @@ class LatentSwitchTest(unittest.TestCase):
             )
             model.infer(proprio=proprio, img=images)
             torch.testing.assert_close(projection.call_args.args[0], torch.zeros(2, 1, 2))
+
+    def test_posterior_ignores_padded_targets(self) -> None:
+        model = self.make_model(use_z=True)
+        proprio, targets, _ = self.observations()
+        mask = torch.tensor([[1., 0.], [1., 0.]])
+        changed = targets.clone()
+        changed[:, 1] = 1000.
+        baseline = model.posterior(proprio=proprio, actions=targets, mask=mask)
+        actual = model.posterior(proprio=proprio, actions=changed, mask=mask)
+        for expected, observed in zip(baseline, actual):
+            torch.testing.assert_close(expected, observed)
 
     def test_disabled_loss_accepts_absent_posterior(self) -> None:
         action_loss = torch.tensor(2.0, requires_grad=True)
