@@ -62,6 +62,8 @@ Unknown or missing hardware/API data fails closed.
 | Search, ranking, durable create intent, exact-label reconciliation, provisional cleanup | `provision.py` |
 | Single-shot create transport and atomic allowlisted result receipts | `create_request.py` |
 | Explicit operator-attested provider rejection recovery (never absence-only) | `resolve_create.py` |
+| Fresh API SSH endpoint selection and host-key pinning | `ssh_endpoint.py` |
+| User-authorized removal of an unlaunched provisioning rental | `abandon_provisional.py` |
 | User-authorized cancellation through the runner; watcher-only destruction | `cancel_run.py` |
 | Allowed CPU/cgroup/GPU/disk measurements and validation | `hardware-probe.sh`, `hardware_gate.py` |
 | S3 latency/upload measurements | `network-gate.sh` (signed URLs sent via SSH stdin, never logged) |
@@ -178,6 +180,20 @@ To stop only a selected sweep's server and synchronizer, use
 `ablation_tensorboard.py stop "$ITERATION_DIR"`. It checks both owners, preserves
 cache/logs and disables automatic dashboard restart on resume. Only explicit
 `refresh` opts back in. It performs no S3 or rental operations.
+
+New rentals explicitly publish container port 22. Provisioning prefers the
+fresh API's explicit `22/tcp` direct mapping, then the proxy fields; it never
+infers a port from an allocation range or trusts CLI URL caches. The selected
+endpoint and host keys are pinned; resume refuses automatic replacement.
+
+For explicit user-authorized removal of a known, unlaunched provisioning rental,
+use `abandon_provisional.py --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID"
+--confirm-abandon`. This verifies exact identity, records intent before removal,
+and requires valid API absence before retiring only that combo as `abandoned`.
+It never rents a replacement, launches training, changes the pinned SHA, or
+manages dashboards. Repeat the same command after interrupted verification;
+do not resume provisioning. Other combos remain unchanged. See `ablate.md` for
+the full contract. No Git gate is needed for this cleanup-only operation.
 
 For explicit user-authorized cancellation of a launched instance, use
 `cancel_run.py --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID"`. It validates

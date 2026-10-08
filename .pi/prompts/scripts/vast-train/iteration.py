@@ -12,7 +12,7 @@ from workflow_common import (
 )
 
 ROOT = REPO / ".vast-train-local/ablations"
-FINAL = {"done", "failed", "verification_failed"}
+FINAL = {"done", "failed", "verification_failed", "abandoned"}
 
 
 def input_paths(*, source: Path, kind: str) -> list[Path]:
@@ -142,6 +142,11 @@ class Iteration:
         if any(combo["status"] not in valid for combo in self.state["combos"]):
             raise Blocked("Invalid combo status")
         for combo in self.state["combos"]:
+            if combo["status"] == "abandoned" and (
+                    combo.get("training_launch_requested") or not combo.get("provisional_abandon_requested")
+                    or not combo.get("provisional_abandon_verified_at")
+                    or any(attempt.get("status") != "removed" for attempt in combo.get("attempts", []))):
+                raise Blocked("Abandoned combo must be unlaunched with verified provisional removal")
             attempts = combo.get("attempts")
             if not isinstance(attempts, list) or len(attempts) > 3:
                 raise Blocked("Invalid provisioning attempt history")

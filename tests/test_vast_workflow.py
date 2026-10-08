@@ -431,7 +431,8 @@ class ProvisionTests(LocalFixture):
             if not requested:
                 return []
             return [{"id": 123, "label": combo["attempts"][0]["label"], "actual_status": "running",
-                     "status_msg": "", "dph_total": 0.55, "jupyter_token": "sensitive-test-token"}]
+                     "status_msg": "", "dph_total": 0.55, "jupyter_token": "sensitive-test-token",
+                     "ssh_host": "example.invalid", "ssh_port": 2222}]
         def command(**kwargs):
             args = kwargs["args"]
             if len(args) > 1 and Path(args[1]).name == "create_request.py":
@@ -488,6 +489,31 @@ class ProvisionTests(LocalFixture):
             with self.assertRaises(common.Blocked):
                 provision.destroy_provisional(journal=self.journal, attempt=attempt, save=lambda: None)
             run.assert_not_called()
+
+
+class AbandonValidationTests(LocalFixture):
+    def test_abandoned_combo_requires_verified_removal_and_no_launch(self) -> None:
+        saved = self.make_iteration()
+        combo = saved.state["combos"][0]
+        combo["status"] = "abandoned"
+        with self.assertRaises(common.Blocked):
+            saved.validate()
+        combo["provisional_abandon_verified_at"] = "test-time"
+        combo["provisional_abandon_requested"] = "test-time"
+        saved.validate()
+        combo["training_launch_requested"] = True
+        with self.assertRaises(common.Blocked):
+            saved.validate()
+
+    def test_driver_skips_abandoned_combo_without_renting_or_launching(self) -> None:
+        saved = self.make_iteration()
+        saved.state["combos"][0].update(status="abandoned", provisional_abandon_verified_at="test-time",
+                                       provisional_abandon_requested="test-time")
+        with patch.object(workflow, "ensure_dashboard"), patch.object(workflow, "provision") as rent, \
+                patch.object(workflow, "launch") as launch:
+            workflow.execute(saved)
+        rent.assert_not_called()
+        launch.assert_not_called()
 
 
 class RecoveryTests(LocalFixture):

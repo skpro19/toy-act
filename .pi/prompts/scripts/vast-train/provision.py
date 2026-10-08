@@ -13,9 +13,10 @@ from collections.abc import Callable
 import uuid
 
 from hardware_gate import cpu_rank, evaluate
+from ssh_endpoint import select_endpoint
 from workflow_common import (
     Blocked, HELPERS, MAX_PRICE, PROFILE, REGION, REPO, Journal,
-    atomic_write, git_preflight, instances, lock, now, ssh_args, write_json,
+    git_preflight, instances, lock, now, ssh_args, write_json,
 )
 
 OFFER_QUERY = (
@@ -200,6 +201,8 @@ def network_gate(*, journal: Journal, run: dict, directory: Path) -> bool:
 
 def provision(*, journal: Journal, combo: dict, directory: Path,
               commit: str, save: Callable[[], None]) -> dict:
+    if combo.get("provisional_abandon_requested"):
+        raise Blocked("Provisional abandonment is pending; repeat abandon_provisional.py, not provisioning")
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     attempts = combo.setdefault("attempts", [])
     while True:
@@ -275,28 +278,11 @@ def provision(*, journal: Journal, combo: dict, directory: Path,
             destroy_provisional(journal=journal, attempt=active, save=save)
             continue
         write_json(path=run_dir / "instance.json", value=record)  # Sensitive, mode 600.
-        url = journal.run(args=["vastai", "ssh-url", str(identity)]).stdout.strip()
-        match = re.fullmatch(r"ssh://root@([a-zA-Z0-9.-]+):([0-9]+)", url)
-        if not match or not 1 <= int(match[2]) <= 65535:
-            raise Blocked("Invalid SSH URL; provisional instance left recoverable")
-        run = {"host": match[1], "port": int(match[2]), "known_hosts": str(run_dir / "known_hosts"),
+        selected = select_endpoint(journal=journal, record=record, attempt=active,
+                                   known_hosts=run_dir / "known_hosts", save=save)
+        run = {**selected, "known_hosts": str(run_dir / "known_hosts"),
                "instance_id": identity, "label": active["label"], "run_dir": str(run_dir),
                "offer": active["offer"], "actual_price": record.get("dph_total", "unknown")}
-        keys = ""
-        for _ in range(12):
-            keyscan = journal.run(args=["ssh-keyscan", "-T", "10", "-p", str(run["port"]), run["host"]],
-                                  timeout=35, check=False)
-            keys = "\n".join(line for line in keyscan.stdout.splitlines() if not line.startswith("#"))
-            if not keyscan.returncode and keys:
-                break
-            time.sleep(5)
-        else:
-            raise Blocked("SSH host-key scan failed; retry this iteration, not another rental")
-        # Never silently replace a recorded host key on resume.
-        known_hosts = Path(run["known_hosts"])
-        if known_hosts.exists() and set(known_hosts.read_text().splitlines()) != set(keys.splitlines()):
-            raise Blocked("SSH host key changed; refusing automatic replacement")
-        atomic_write(path=known_hosts, text=keys + "\n")
         probe_result = journal.run(args=ssh_args(run=run, command="bash -s"),
                                    input_text=(HELPERS / "hardware-probe.sh").read_text(),
                                    timeout=120, check=False, log_path=directory / f"hardware-{identity}.log")

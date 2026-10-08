@@ -74,6 +74,7 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(payload["disk"], 100)
         self.assertTrue(payload["cancel_unavail"])
         self.assertEqual(payload["runtype"], "ssh_direc ssh_proxy")
+        self.assertEqual(payload["env"], {"-p 22:22": "1"})
 
     def test_transport_errors_do_not_retry_or_leak_exception(self) -> None:
         for error in (URLError("secret-provider-token"), TimeoutError("secret-provider-token"),

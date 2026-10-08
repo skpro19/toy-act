@@ -138,6 +138,39 @@ handoff checks; the shared dashboard never authorizes instance cleanup.
   recovery; it does not guarantee that an uncertain create can be resolved. A
   new invocation remains independent. Never perform global old-run cleanup.
 
+## SSH endpoint recovery
+
+New create requests explicitly publish container port 22. Provisioning reads
+fresh, exact-identity-validated API data: it prefers `public_ipaddr` with
+`ports["22/tcp"][0]["HostPort"]`, then tries the recorded proxy fields. It never
+infers SSH from `direct_port_start` or trusts the CLI's cached SSH URL. Missing
+mappings permit proxy-only access; malformed mappings fail closed. Host-key scans
+are bounded, and the selected endpoint is saved before remote setup. Resume
+retains that endpoint and refuses changed host keys or endpoint replacement.
+No SSH failure authorizes an automatic replacement rental.
+
+## Explicit abandonment of an unlaunched provisional rental
+
+Only after the user explicitly requests removal of a particular provisional
+instance, use:
+
+```bash
+uv run --frozen python .pi/prompts/scripts/vast-train/abandon_provisional.py \
+  --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID" --confirm-abandon
+```
+
+This locks and validates the iteration, requires a known instance in provisioning
+with no training launch intent or accepted run, records durable abandonment
+intent, and removes only the exact saved ID/label. Successful, valid API absence
+is required before the combo becomes `abandoned`. Failed queries never prove
+removal. Interrupted verification is recovered by repeating this exact command;
+ordinary provisioning is blocked while abandonment is pending. The selected
+combo is retired without a replacement; other combos remain unchanged, and a
+later driver resume could still advance them. No new training or dashboard
+operations occur, and the pinned SHA remains unchanged. Cleanup does not require
+the old pinned checkout; provisioning still does. Launched runs must use the
+watcher-owned cancellation path below, never this helper.
+
 ## Explicit cancellation of a launched run
 
 Only after the user explicitly requests cancellation of a particular instance:
