@@ -31,7 +31,7 @@ def candidates(record: dict) -> list[dict]:
         raise Blocked("Invalid provider port mappings")
     mapping = ports.get("22/tcp")
     if mapping is not None:
-        if not isinstance(mapping, list) or len(mapping) != 1 or not isinstance(mapping[0], dict):
+        if not isinstance(mapping, list) or not mapping or any(not isinstance(binding, dict) for binding in mapping):
             raise Blocked("Ambiguous or invalid direct SSH mapping")
         try:
             address = ipaddress.IPv4Address(record.get("public_ipaddr"))
@@ -39,7 +39,12 @@ def candidates(record: dict) -> list[dict]:
             raise Blocked("Invalid provider direct SSH address") from error
         if not address.is_global:
             raise Blocked("Direct SSH address must be public")
-        result.append(endpoint(host=str(address), port=mapping[0].get("HostPort")))
+        # Docker can publish the same port for both IPv4 and IPv6. Validate
+        # every binding, then accept duplicates only if their ports agree.
+        direct = [endpoint(host=str(address), port=binding.get("HostPort")) for binding in mapping]
+        if any(candidate != direct[0] for candidate in direct[1:]):
+            raise Blocked("Ambiguous or invalid direct SSH mapping")
+        result.append(direct[0])
     if record.get("ssh_host") is not None or record.get("ssh_port") is not None:
         proxy = endpoint(host=record.get("ssh_host"), port=record.get("ssh_port"))
         if "jupyter" in str(record.get("image_runtype", "")):

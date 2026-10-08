@@ -183,8 +183,10 @@ cache/logs and disables automatic dashboard restart on resume. Only explicit
 
 New rentals explicitly publish container port 22. Provisioning prefers the
 fresh API's explicit `22/tcp` direct mapping, then the proxy fields; it never
-infers a port from an allocation range or trusts CLI URL caches. The selected
-endpoint and host keys are pinned; resume refuses automatic replacement.
+infers a port from an allocation range or trusts CLI URL caches. Duplicate IPv4/IPv6
+bindings are accepted only when every binding has a valid, identical normalized
+host port; conflicting or malformed bindings fail closed. The selected endpoint
+and host keys are pinned; resume refuses automatic replacement.
 
 For explicit user-authorized removal of a known, unlaunched provisioning rental,
 use `abandon_provisional.py --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID"

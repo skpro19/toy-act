@@ -44,6 +44,34 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(self.known_hosts.stat().st_mode & 0o777, 0o600)
         self.save.assert_called_once()
 
+    def test_dual_stack_bindings_with_same_port_select_and_pin_direct(self) -> None:
+        self.record["ports"] = {"22/tcp": [
+            {"HostIp": "0.0.0.0", "HostPort": "3028"},
+            {"HostIp": "::", "HostPort": "3028"}]}
+        self.journal.run.side_effect = self.scan
+        selected = self.select()
+        self.assertEqual(selected, {"host": "8.8.8.8", "port": 3028})
+        self.assertEqual(self.attempt["ssh_endpoint"], selected)
+        self.assertEqual(self.journal.run.call_count, 1)
+        self.save.assert_called_once()
+        self.assertIn("[8.8.8.8]:3028", self.known_hosts.read_text())
+
+    def test_duplicate_ports_are_compared_after_normalization(self) -> None:
+        self.record["ports"] = {"22/tcp": [{"HostPort": "3028"}, {"HostPort": 3028}]}
+        self.assertEqual(ssh_endpoint.candidates(self.record)[0], {"host": "8.8.8.8", "port": 3028})
+
+    def test_dual_stack_direct_failure_still_uses_proxy(self) -> None:
+        self.record["ports"] = {"22/tcp": [
+            {"HostIp": "0.0.0.0", "HostPort": "41685"},
+            {"HostIp": "::", "HostPort": "41685"}]}
+        def scan(**kwargs):
+            if kwargs["args"][-1] == "8.8.8.8":
+                return subprocess.CompletedProcess(kwargs["args"], 1, "", "")
+            return self.scan(**kwargs)
+        self.journal.run.side_effect = scan
+        self.assertEqual(self.select(), {"host": "ssh6.vast.ai", "port": 31270})
+        self.assertEqual(self.journal.run.call_count, 2)
+
     def test_direct_failure_falls_back_to_proxy(self) -> None:
         def scan(**kwargs):
             if kwargs["args"][-1] == "8.8.8.8":
@@ -63,6 +91,10 @@ class EndpointTests(unittest.TestCase):
         variants = [{"ports": []}, {"ports": {"22/tcp": []}},
                     {"ports": {"22/tcp": [{"HostPort": "0"}]}},
                     {"ports": {"22/tcp": [{"HostPort": "41685"}, {"HostPort": "41686"}]}},
+                    {"ports": {"22/tcp": [{"HostPort": "41685"}, {}]}},
+                    {"ports": {"22/tcp": [{"HostPort": "41685"}, None]}},
+                    {"ports": {"22/tcp": [{"HostPort": "41685"}, {"HostPort": True}]}},
+                    {"ports": {"22/tcp": [{"HostPort": "41685"}, {"HostPort": "0"}]}},
                     {"public_ipaddr": "127.0.0.1"}, {"public_ipaddr": "bad"},
                     {"ssh_host": "-evil"}, {"ssh_port": True}, {"ssh_port": 65536}]
         for variant in variants:

@@ -144,7 +144,9 @@ New create requests explicitly publish container port 22. Provisioning reads
 fresh, exact-identity-validated API data: it prefers `public_ipaddr` with
 `ports["22/tcp"][0]["HostPort"]`, then tries the recorded proxy fields. It never
 infers SSH from `direct_port_start` or trusts the CLI's cached SSH URL. Missing
-mappings permit proxy-only access; malformed mappings fail closed. Host-key scans
+mappings permit proxy-only access. Duplicate IPv4/IPv6 bindings are accepted only
+when every binding has a valid, identical normalized host port; conflicting or
+malformed mappings fail closed. Host-key scans
 are bounded, and the selected endpoint is saved before remote setup. Resume
 retains that endpoint and refuses changed host keys or endpoint replacement.
 No SSH failure authorizes an automatic replacement rental.
