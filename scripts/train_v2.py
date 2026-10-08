@@ -328,9 +328,9 @@ def resolve_dataset(*, cli_dataset: Path | None, config: dict) -> Path:
 
 def make_action_loss_fn(*, action_loss: str) -> nn.Module:
     if action_loss == "l1":
-        return nn.L1Loss(reduction="mean")
+        return nn.L1Loss(reduction="none")
     if action_loss == "l2":
-        return nn.MSELoss(reduction="mean")
+        return nn.MSELoss(reduction="none")
     allowed = ", ".join(sorted(ACTION_LOSS_CHOICES))
     raise ValueError(f"action_loss must be one of {{{allowed}}}, got {action_loss!r}")
 
@@ -685,6 +685,19 @@ def evaluate_and_log_checkpoint(
     return env
 
 
+def get_masked_action_loss(loss: torch.Tensor, mask: torch.Tensor): 
+
+    B, k , dims = loss.shape
+
+    mask = mask.unsqueeze(2).expand(B, k, dims)
+    valid_cnt  = torch.sum(mask)
+    masked_loss = torch.sum(loss * mask)
+    masked_loss = masked_loss / (valid_cnt + 1e-6)
+    return masked_loss
+
+
+
+
 def train(
     *,
     config: dict,
@@ -832,6 +845,8 @@ def train(
             img = batch_dict["images"].to(device, non_blocking=True)
             proprio = batch_dict["proprio"].to(device, non_blocking=True)
             actions = batch_dict["target_actions"].to(device, non_blocking=True)
+            action_mask = batch_dict["action_mask"].to(device,non_blocking=True)
+            
             if log_sensitivity and probe_images is None:
                 # Fix real observations from the first batch for every epoch.
                 probe_images = img[:SENSITIVITY_PROBE_SIZE].detach().clone()
@@ -839,7 +854,9 @@ def train(
 
             pred_actions, mu, log_sigma_x2 = model(proprio=proprio, actions=actions, img=img)
 
-            action_loss = action_loss_fn(pred_actions, actions)
+            per_step_action_loss = action_loss_fn(pred_actions, actions)
+            action_loss = get_masked_action_loss(per_step_action_loss, action_mask)
+
             loss, kl_loss = get_training_loss(
                 action_loss=action_loss,
                 mu=mu,
