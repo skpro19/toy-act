@@ -930,7 +930,9 @@ def train(
                     target_gripper_max = target_gripper.max().item()
 
                 if log_latent:
-                    mu_norm = mu.detach().float().norm().item()
+                    mu_values = mu.detach().float()
+                    mu_norm = mu_values.norm().item()
+                    mu_rms = mu_values.square().mean().sqrt().item()
                     log_sigma_x2_mean = log_sigma_x2.detach().mean().item()
                     sigma_mean = (0.5 * log_sigma_x2.detach()).exp().mean().item()
 
@@ -969,6 +971,7 @@ def train(
                 writer.add_scalar("ranges/target_max_gripper", target_gripper_max, global_step)
             if log_latent:
                 writer.add_scalar("latent/mu_norm", mu_norm, global_step)
+                writer.add_scalar("latent/mu_rms", mu_rms, global_step)
                 writer.add_scalar("latent/log_sigma_x2_mean", log_sigma_x2_mean, global_step)
                 writer.add_scalar("latent/sigma_mean", sigma_mean, global_step)
             if log_activations:
