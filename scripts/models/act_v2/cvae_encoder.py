@@ -1,11 +1,11 @@
 from torch import nn 
 import torch 
 from scripts.models.act_v2.config import (
-    ACTION_CHUNK_SIZE, 
-    D_MODEL, 
-    N_HEAD, 
-    NUM_LAYERS, 
-    Z_DIMS)
+    D_MODEL,
+    N_HEAD,
+    NUM_LAYERS,
+    Z_DIMS,
+)
 
 """  
     CVAE Encoder => leans phi_theta(z | proprio , action_chunks) 
@@ -30,7 +30,7 @@ class CVAEEncoder(nn.Module):
         self.num_layers = num_layers
         self.z_dims = z_dims
         
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=D_MODEL,
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model,
                                                         nhead = nhead,
                                                         dim_feedforward=4 * self.d_model,
                                                         dropout=0.1,
@@ -44,11 +44,9 @@ class CVAEEncoder(nn.Module):
         self.z_head = nn.Linear(self.d_model, 2 * self.z_dims)
 
 
-    def forward(self, src:torch.Tensor):
-        
-        """ src => k action chunks + proprio_token  + cls token """
-        
-        out = self.transformer_encoder(src) # [B, k + 2, d_model]
+    def forward(self, *, src: torch.Tensor, mask: torch.Tensor | None = None):
+        """src => [cls] + proprio + k action tokens; mask is src_key_padding_mask (True = ignore)."""
+        out = self.transformer_encoder(src=src, src_key_padding_mask=mask)  # [B, k + 2, d_model]
 
         # print(f"[cvae encoder] out.shape => {out.shape}")
 
