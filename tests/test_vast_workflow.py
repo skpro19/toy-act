@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 
 HELPERS = Path(__file__).resolve().parents[1] / ".pi/prompts/scripts/vast-train"
 sys.path.insert(0, str(HELPERS))
+import create_request
 import hardware_gate
 import iteration
 import provision
@@ -92,6 +93,9 @@ class HardwareTests(unittest.TestCase):
 
 class LocalFixture(unittest.TestCase):
     def setUp(self) -> None:
+        visibility = patch.object(provision, "CREATE_VISIBILITY_SECONDS", 0)
+        visibility.start()
+        self.addCleanup(visibility.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -148,6 +152,25 @@ class IterationTests(LocalFixture):
             with self.subTest(path=name), self.assertRaises(common.Blocked):
                 iteration.Iteration(directory=saved.directory)
             path.write_text(original)
+
+    def test_provider_resolution_evidence_is_hash_checked_and_confined(self) -> None:
+        saved = self.make_iteration()
+        path = saved.directory / "combos/0000/rejection.json"
+        common.write_json(path=path, value={"provider_reference": "ticket-123"})
+        attempt = {"status": "removed", "provider_resolution": {
+            "evidence": str(path.relative_to(saved.directory)), "sha256": common.digest(path)}}
+        saved.state["combos"][0].update(status="provisioning", attempts=[attempt])
+        saved.validate()
+        original = path.read_bytes()
+        path.write_text("modified")
+        with self.assertRaises(common.Blocked):
+            saved.validate()
+        path.write_bytes(original)
+        outside = self.root / "outside.json"
+        outside.write_bytes(original)
+        attempt["provider_resolution"]["evidence"] = str(outside)
+        with self.assertRaises(common.Blocked):
+            saved.validate()
 
     def test_stale_configs_are_not_enumerated(self) -> None:
         saved = self.make_iteration()
@@ -329,7 +352,7 @@ class ProvisionTests(LocalFixture):
         def save():
             saved.append(deepcopy(combo))
         def command(**kwargs):
-            self.assertEqual(kwargs["args"][:3], ["vastai", "create", "instance"])
+            self.assertEqual(Path(kwargs["args"][1]).name, "create_request.py")
             self.assertEqual(saved[-1]["attempts"][0]["status"], "create_requested")
             self.assertTrue(saved[-1]["attempts"][0]["label"].startswith("toy-act-train-actv2-"))
             raise common.Blocked("create response lost")
@@ -348,8 +371,13 @@ class ProvisionTests(LocalFixture):
             index = len(combo.get("attempts", [])) + 1
             return [dict(fixture_offer(), id=index, machine_id=index * 10)]
         def command(**kwargs):
-            commands.append(kwargs["args"])
-            return subprocess.CompletedProcess(kwargs["args"], 0, '{"success":false}', "")
+            args = kwargs["args"]
+            commands.append(args)
+            common.write_json(path=Path(args[args.index("--result") + 1]), value={
+                "version": 1, "offer_id": int(args[args.index("--offer-id") + 1]),
+                "label": args[args.index("--label") + 1],
+                **create_request.classify_response(status=200, body=b'{"success":false}')})
+            return subprocess.CompletedProcess(args, 0, "", "")
         with patch.object(provision, "search_offers", side_effect=offers), \
                 patch.object(provision, "git_preflight", return_value=COMMIT), \
                 patch.object(provision, "instances", return_value=[]), \
@@ -406,7 +434,7 @@ class ProvisionTests(LocalFixture):
                      "status_msg": "", "dph_total": 0.55, "jupyter_token": "sensitive-test-token"}]
         def command(**kwargs):
             args = kwargs["args"]
-            if args[:3] == ["vastai", "create", "instance"]:
+            if len(args) > 1 and Path(args[1]).name == "create_request.py":
                 self.assertEqual(snapshots[-1]["status"], "provisioning")
                 requested.append(True)
                 output = "unparseable response recovered by label"

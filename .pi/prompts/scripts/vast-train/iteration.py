@@ -152,6 +152,13 @@ class Iteration:
                 raise Blocked("An attempted combo cannot be reset to pending")
             if combo.get("training_launch_requested") and combo["status"] not in FINAL | {"awaiting_handoff", "running"}:
                 raise Blocked("Training launch intent cannot return to provisioning/setup")
+            for attempt in attempts:
+                resolution = attempt.get("provider_resolution")
+                if resolution is not None:
+                    evidence = self.directory / resolution["evidence"]
+                    if (not evidence.resolve().is_relative_to(self.directory.resolve())
+                            or digest(evidence) != resolution["sha256"]):
+                        raise Blocked("Provider-resolution evidence was modified")
             for key, filename in (("setup_sha256", "setup.env"), ("watcher_sha256", "watcher.sh")):
                 if key in combo and digest(Path(combo["run_dir"]) / filename) != combo[key]:
                     raise Blocked(f"Saved run input was modified: {filename}")
@@ -169,11 +176,13 @@ class Iteration:
                 "combo  status                instance  tensorboard / run directory"]
         dashboard = self.state.get("tensorboard", {})
         if dashboard:
-            rows.append(f"Shared TensorBoard: {dashboard['url']} (S3-backed; updates delayed)")
+            status = "stopped; cached events retained" if dashboard.get("disabled") else "S3-backed; updates delayed"
+            rows.append(f"Shared TensorBoard: {dashboard['url']} ({status})")
             rows.append(f"Dashboard diagnostics: {self.directory / 'tensorboard'}")
         for combo, entry in zip(self.state["combos"], self.manifest["combos"]):
             lease = combo.get("lease", {})
-            tb = dashboard.get("url") or (f"http://localhost:{lease['TB_PORT']}/" if lease else "-")
+            tb = ("stopped" if dashboard.get("disabled") else dashboard.get("url")) or (
+                f"http://localhost:{lease['TB_PORT']}/" if lease else "-")
             rows.append(f"{combo['id']}   {combo['status']:<21} {str(combo.get('instance_id', '-')):<9} {tb}  {entry['slug']}")
             if combo.get("run_dir"):
                 rows.append(f"       {combo['run_dir']}")

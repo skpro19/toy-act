@@ -100,6 +100,19 @@ An unrelated occupied port blocks recovery; no unrelated service is stopped. The
 `/tb-s3` prompt wraps this recovery; pass an iteration ID or directory, or run it
 with no argument to choose from the saved dashboards.
 
+To stop a dashboard the user explicitly no longer wants:
+
+```bash
+uv run --frozen python .pi/prompts/scripts/vast-train/ablation_tensorboard.py \
+  stop "$ITERATION_DIR"
+```
+
+This validates both tmux session owners before stopping either, stops only the
+iteration's server and synchronizer, and retains cached events/logs. It records
+an opt-out so ordinary resume does not restart them. Explicit `refresh` opts back
+in; an unrelated occupied port still blocks restart. No S3 or rental operations
+are performed by `stop`.
+
 Report the **shared iteration URL** for all combos, not their internal forwarding
 URLs. Existing per-instance TensorBoard servers and forwarding remain internal
 handoff checks; the shared dashboard never authorizes instance cleanup.
@@ -121,9 +134,91 @@ handoff checks; the shared dashboard never authorizes instance cleanup.
   confirmed removal before terminal reconciliation. Do not mark terminal runs
   `running`, erase state, or bypass the gate to make the loop advance.
 - Driver exit 0 means handed off/reconciled (or planned), not training success;
-  1 means blocked, 2 invalid CLI input, 130 interrupted. A blocked/interrupted
-  iteration is recoverable through explicit resume. A new invocation remains
-  independent. Never perform global old-run cleanup.
+  1 means blocked, 2 invalid CLI input, 130 interrupted. Explicit resume attempts
+  recovery; it does not guarantee that an uncertain create can be resolved. A
+  new invocation remains independent. Never perform global old-run cleanup.
+
+## Explicit cancellation of a launched run
+
+Only after the user explicitly requests cancellation of a particular instance:
+
+```bash
+uv run --frozen python .pi/prompts/scripts/vast-train/cancel_run.py \
+  --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID" --wait-seconds 900
+```
+
+This locks and validates the selected iteration, confirms its exact instance
+label, requires a live saved watcher, and verifies the remote revision, run name,
+runner script and process identity before sending TERM to the runner. The runner
+writes its own terminal marker; the helper never fabricates markers or destroys
+instances. Only the saved watcher owns backup and removal. The helper waits for
+its report and independently confirms absence through a valid API response.
+Interrupted verification is recoverable by repeating this exact cancellation
+command; do not run the sweep driver merely to cancel (it could advance other
+combos). No Git gate or saved revision is changed, and no new training starts.
+
+## Create diagnostics and provider-confirmed recovery
+
+Create requests use `create_request.py`, a single-shot API adapter, rather than
+CLI exit codes (the Vast CLI may print an HTTP error and still exit 0). Before
+printing its result, the adapter atomically records an allowlisted receipt at
+`combos/<combo>/create-<label>.json`: request identity, HTTP status when available,
+result classification, reason, and response size/hash. Raw responses, headers,
+credentials and free-form provider messages are not persisted. HTTP errors,
+transport errors, malformed/contradictory responses and missing receipts remain
+uncertain; they never authorize replacement creates. Explicit successful-HTTP
+`success: false` responses without an instance identity are recorded as rejection.
+
+Resume replays a saved receipt without resending the request. Exact-label
+visibility is checked for up to 60 seconds with read-only queries; multiple
+matches block immediately. Persistent absence alone is not proof of rejection.
+Do not keep blindly resuming an unchanged ambiguity, edit state by hand, or offer
+an absence-based override. Ask Vast for authoritative confirmation about the
+exact label, offer ID and request time; do not infer rejection from CLI exit 0.
+
+For an unlaunched request with no known instance identity, an operator who has
+obtained and reviewed provider confirmation that **no rental was created** may
+record it using the dedicated recovery helper. This is an explicit human
+attestation, not automated verification of a support ticket. An agent must not
+invent confirmation or fabricate evidence to advance the sweep.
+
+Create a local, non-secret JSON evidence file containing exactly these fields
+(the identity values must come from that attempt's saved state):
+
+```json
+{
+  "iteration_id": "<saved iteration ID>",
+  "combo_id": "<combo ID>",
+  "label": "<exact saved create label>",
+  "offer_id": 123,
+  "created_at": "<exact saved request timestamp>",
+  "conclusion": "provider_confirmed_no_rental",
+  "provider_reference": "<support ticket or request reference, not a URL>",
+  "reviewed_by": "<operator name>"
+}
+```
+
+Then, only after explicit operator confirmation:
+
+```bash
+uv run --frozen python .pi/prompts/scripts/vast-train/resolve_create.py \
+  --resume "$ITERATION_ID" --combo "$COMBO_ID" --evidence "$EVIDENCE_PATH" \
+  --confirm-provider-rejection
+```
+
+The helper locks and validates only that iteration, checks exact-label absence
+with a successful valid API response, preserves hashed evidence and all attempt
+history, and resolves only the uncertain unlaunched attempt. It does not rent,
+launch, destroy, or restart services. Failed API queries, existing instances,
+known create identities/results, or any training launch intent block recovery.
+The three-attempt cap remains unchanged. Use normal explicit resume afterward.
+
+Recovery does not change the pinned SHA or bypass Git checks. Source fixes make
+the checkout dirty, and committing them advances its revision; provisioning an
+older iteration still requires its original clean, anonymously synchronized
+pinned checkout. Never substitute the new SHA, automatically repair Git, or
+resume/provision as part of testing these fixes. Existing watchers remain owned
+by their saved snapshots. Tests use mocked API responses, not live rentals.
 
 ## Logging and response
 

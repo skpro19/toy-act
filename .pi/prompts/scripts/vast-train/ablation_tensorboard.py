@@ -72,6 +72,11 @@ def ensure_dashboard(iteration) -> None:
                        "server_session": f"ablate-tb-{directory.name}",
                        "sync_session": f"ablate-sync-{directory.name}"}
             write_json(path=metadata_path, value=service)
+        if service.get("disabled"):
+            iteration.state["tensorboard"] = service
+            iteration.save()
+            journal.progress(text="Shared ablation TensorBoard was explicitly stopped; not restarting")
+            return
         server = service["server_session"]
         if not session_exists(name=server) and not port_available(port=service["port"]):
             raise Blocked(f"Saved TensorBoard port {service['port']} is occupied; see {metadata_path}")
@@ -161,6 +166,46 @@ def sync_once(*, directory: Path, journal: Journal) -> dict:
     return results
 
 
+def stop_owned_sessions(*, directory: Path, service: dict, journal: Journal) -> None:
+    expected = {"server_session": f"ablate-tb-{directory.name}",
+                "sync_session": f"ablate-sync-{directory.name}"}
+    if service["directory"] != str(directory):
+        raise Blocked("Dashboard belongs to another iteration")
+    # Validate both sessions before stopping either; exact names prevent prefix matches.
+    for field, name in expected.items():
+        if service[field] != name:
+            raise Blocked("Unexpected dashboard session identity")
+        if session_exists(name=name):
+            owner = journal.run(args=["tmux", "show-options", "-v", "-t", name, "@iteration"])
+            if owner.stdout.strip() != str(directory):
+                raise Blocked(f"Unrelated tmux session occupies {name}")
+    for name in expected.values():
+        if session_exists(name=name):
+            journal.run(args=["tmux", "kill-session", "-t", f"={name}"])
+            if session_exists(name=name):
+                raise Blocked(f"Dashboard session still exists after stop: {name}")
+
+
+def stop_dashboard(*, directory: Path) -> None:
+    """Stop only iteration-owned services; retain logs/cache and disable auto-recovery."""
+    from iteration import Iteration
+
+    with lock(directory / "driver.lock"):
+        iteration = Iteration(directory=directory)
+        root = directory / "tensorboard"
+        service = json.loads((root / "service.json").read_text())
+        if iteration.manifest["kind"] != "sweep":
+            raise Blocked("Dashboard does not belong to a sweep")
+        journal = Journal(directory=root)
+        stop_owned_sessions(directory=directory, service=service, journal=journal)
+        service.update(disabled=True, stopped_at=now())
+        write_json(path=root / "service.json", value=service)
+        iteration.state["tensorboard"] = service
+        iteration.save()
+        journal.event(kind="tensorboard_stopped", port=service["port"])
+        print("Stopped this iteration's TensorBoard server and synchronizer; cache/logs retained")
+
+
 def refresh_dashboard(*, directory: Path) -> None:
     """Recover only a saved dashboard; never provision or execute training."""
     from iteration import Iteration
@@ -171,42 +216,36 @@ def refresh_dashboard(*, directory: Path) -> None:
         service = json.loads((root / "service.json").read_text())
         if service["directory"] != str(directory) or iteration.manifest["kind"] != "sweep":
             raise Blocked("Dashboard does not belong to this sweep")
-        expected = {"server_session": f"ablate-tb-{directory.name}",
-                    "sync_session": f"ablate-sync-{directory.name}"}
         journal = Journal(directory=root)
-        # Verify both sessions before stopping either one. Never touch unrelated
-        # services, even if a saved service record was modified.
-        for field, name in expected.items():
-            if service[field] != name:
-                raise Blocked("Unexpected dashboard session identity")
-            if session_exists(name=name):
-                owner = journal.run(args=["tmux", "show-options", "-v", "-t", name, "@iteration"])
-                if owner.stdout.strip() != str(directory):
-                    raise Blocked(f"Unrelated tmux session occupies {name}")
-        for name in expected.values():
-            if session_exists(name=name):
-                journal.run(args=["tmux", "kill-session", "-t", f"={name}"])
+        stop_owned_sessions(directory=directory, service=service, journal=journal)
         with lock(root / "sync.lock"):
             results = sync_once(directory=directory, journal=journal)
             journal.event(kind="tensorboard_refresh", results=results)
             if not all(result["ok"] for result in results.values()):
                 raise Blocked(f"Dashboard download failed; see {root / 'driver.log'}")
+        # Only an explicit refresh opts a deliberately stopped dashboard back in.
+        service.pop("disabled", None)
+        service.pop("stopped_at", None)
+        write_json(path=root / "service.json", value=service)
         ensure_dashboard(iteration)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["serve", "sync", "refresh"])
+    parser.add_argument("mode", choices=["serve", "sync", "refresh", "stop"])
     parser.add_argument("directory", type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     directory = args.directory.resolve()
     root = directory / "tensorboard"
-    if args.mode == "refresh":
+    if args.mode in {"refresh", "stop"}:
         # Report blockers concisely instead of a traceback; callers surface the
         # diagnostic path and never fall back to stopping an unrelated service.
         try:
-            refresh_dashboard(directory=directory)
+            if args.mode == "stop":
+                stop_dashboard(directory=directory)
+            else:
+                refresh_dashboard(directory=directory)
         except (Blocked, ValueError, KeyError, TypeError, IndexError, OSError) as error:
             print(f"Blocked: {error}", file=sys.stderr)
             raise SystemExit(1)

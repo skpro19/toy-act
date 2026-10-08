@@ -60,6 +60,9 @@ Unknown or missing hardware/API data fails closed.
 | Git revision gate | `git-preflight.sh` |
 | Local tools, AWS access, lock/config/dataset-source checks | `setup_run.py` |
 | Search, ranking, durable create intent, exact-label reconciliation, provisional cleanup | `provision.py` |
+| Single-shot create transport and atomic allowlisted result receipts | `create_request.py` |
+| Explicit operator-attested provider rejection recovery (never absence-only) | `resolve_create.py` |
+| User-authorized cancellation through the runner; watcher-only destruction | `cancel_run.py` |
 | Allowed CPU/cgroup/GPU/disk measurements and validation | `hardware-probe.sh`, `hardware_gate.py` |
 | S3 latency/upload measurements | `network-gate.sh` (signed URLs sent via SSH stdin, never logged) |
 | Clone/pin, dependencies, CUDA/import/EGL checks | `remote-setup.sh` |
@@ -111,6 +114,21 @@ never delete datasets with the workload profile.
   snapshots block restart. It never reruns terminal training or blindly replaces
   an uncertain create request. Ambiguous setup/report states
   remain blocked with diagnostics rather than being destroyed automatically.
+- Create receipts live under the iteration's `combos/<combo>/create-<label>.json`.
+  They retain HTTP status, classification and safe reasons, not raw sensitive
+  responses. CLI exit 0 is not proof of creation. Resume replays receipts and
+  retries only read-only exact-label queries for up to 60 seconds; persistent
+  absence remains uncertain and duplicate labels block immediately.
+- Explicit resume attempts recovery; it cannot guarantee resolution of a lost
+  create response. If Vast confirms that the exact request created no rental,
+  an operator may use `resolve_create.py` with reviewed request-specific evidence
+  and `--confirm-provider-rejection`. See `ablate.md`'s **Create diagnostics and
+  provider-confirmed recovery** section for its schema and invocation. This is
+  explicit human attestation, not automated proof of a support ticket. Agents
+  must not manufacture evidence. The helper records hashed evidence under the
+  iteration lock, validates fresh absence, preserves history/attempt limits,
+  and never provisions, launches or destroys. Known identities/results, API
+  failures and launch intent block it. No saved SHA or Git gate is changed.
 
 The detached watcher survives session return/suspend, not host reboot. No reboot
 supervisor is installed. Resume the recorded iteration after reboot; do not
@@ -156,6 +174,18 @@ Refresh checks session ownership, restarts only that iteration's dashboard
 services, and retains its recorded port/cache. It does not reconcile outcomes.
 The `/tb-s3` prompt wraps this recovery; pass an iteration ID or directory, or run
 it with no argument to choose from the saved dashboards.
+To stop only a selected sweep's server and synchronizer, use
+`ablation_tensorboard.py stop "$ITERATION_DIR"`. It checks both owners, preserves
+cache/logs and disables automatic dashboard restart on resume. Only explicit
+`refresh` opts back in. It performs no S3 or rental operations.
+
+For explicit user-authorized cancellation of a launched instance, use
+`cancel_run.py --resume "$ITERATION_ID" --instance-id "$INSTANCE_ID"`. It validates
+the exact remote runner/run identity and sends TERM to the runner using the
+project's Python environment. Only the saved watcher observes the terminal
+marker and destroys the instance; the helper waits for a report and verified
+removal. It never advances other combos. See `ablate.md` for details.
+
 Per-instance forwarding remains an internal handoff requirement; single-config
 invocations continue reporting their original forwarded URL. `--plan` starts no services.
 

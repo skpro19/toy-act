@@ -180,6 +180,61 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(journal.run.call_count, 1)
             self.assertNotIn("kill-session", journal.run.call_args.kwargs["args"])
 
+    def test_stop_verifies_both_owners_and_only_kills_exact_sessions(self) -> None:
+        root = Path('/saved/iteration')
+        names = [f'ablate-tb-{root.name}', f'ablate-sync-{root.name}']
+        service = {'directory': str(root), 'server_session': names[0], 'sync_session': names[1]}
+        journal = Mock()
+        journal.run.return_value = SimpleNamespace(stdout=str(root))
+        with patch.object(dashboard, 'session_exists', side_effect=[True, True, True, False, True, False]):
+            dashboard.stop_owned_sessions(directory=root, service=service, journal=journal)
+        commands = [call.kwargs['args'] for call in journal.run.call_args_list]
+        self.assertTrue(all(command[1] == 'show-options' for command in commands[:2]))
+        self.assertEqual(commands[2:], [['tmux', 'kill-session', '-t', f'={name}'] for name in names])
+
+    def test_stop_refuses_second_owner_mismatch_before_any_kill(self) -> None:
+        root = Path('/saved/iteration')
+        service = {'directory': str(root), 'server_session': f'ablate-tb-{root.name}',
+                   'sync_session': f'ablate-sync-{root.name}'}
+        journal = Mock()
+        journal.run.side_effect = [SimpleNamespace(stdout=str(root)), SimpleNamespace(stdout='/unrelated')]
+        with patch.object(dashboard, 'session_exists', return_value=True):
+            with self.assertRaisesRegex(Blocked, 'Unrelated'):
+                dashboard.stop_owned_sessions(directory=root, service=service, journal=journal)
+        self.assertTrue(all(call.kwargs['args'][1] == 'show-options' for call in journal.run.call_args_list))
+
+    def test_stopped_dashboard_is_not_recreated_on_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            iteration = self.make_iteration(directory=root / 'iteration')
+            service = {'directory': str(iteration.directory.resolve()), 'disabled': True, 'url': 'http://localhost:16010/'}
+            (iteration.directory / 'tensorboard').mkdir()
+            (iteration.directory / 'tensorboard/service.json').write_text(json.dumps(service))
+            with patch.object(dashboard, 'REPO', root), patch.object(dashboard, 'ensure_session') as start:
+                dashboard.ensure_dashboard(iteration)
+            start.assert_not_called()
+            iteration.journal.run.assert_not_called()
+            self.assertTrue(iteration.state['tensorboard']['disabled'])
+
+    def test_stop_persists_opt_out_and_preserves_cache_without_s3(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            iteration = self.make_iteration(directory=root)
+            (root / 'tensorboard/logs').mkdir(parents=True)
+            cache = root / 'tensorboard/logs/cached-events'
+            cache.write_bytes(b'cached')
+            service = {'directory': str(root), 'server_session': f'ablate-tb-{root.name}',
+                       'sync_session': f'ablate-sync-{root.name}', 'port': 16010}
+            (root / 'tensorboard/service.json').write_text(json.dumps(service))
+            with patch('iteration.Iteration', return_value=iteration), \
+                    patch.object(dashboard, 'session_exists', return_value=False), \
+                    patch.object(dashboard, 'sync_once') as sync:
+                dashboard.stop_dashboard(directory=root)
+            sync.assert_not_called()
+            self.assertEqual(cache.read_bytes(), b'cached')
+            self.assertTrue(json.loads((root / 'tensorboard/service.json').read_text())['disabled'])
+            iteration.save.assert_called_once()
+
     def test_live_server_reads_snapshot_growth_without_restart(self) -> None:
         try:
             from tensorboard.compat.proto import event_pb2, summary_pb2

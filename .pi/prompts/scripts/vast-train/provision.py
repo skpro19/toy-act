@@ -7,13 +7,14 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sys
 import time
 from collections.abc import Callable
 import uuid
 
 from hardware_gate import cpu_rank, evaluate
 from workflow_common import (
-    Blocked, HELPERS, IMAGE, MAX_PRICE, PROFILE, REGION, REPO, Journal,
+    Blocked, HELPERS, MAX_PRICE, PROFILE, REGION, REPO, Journal,
     atomic_write, git_preflight, instances, lock, now, ssh_args, write_json,
 )
 
@@ -22,6 +23,8 @@ OFFER_QUERY = (
     "cpu_cores_effective>=24 cpu_ram>=64 pci_gen>=4 pcie_bw>=20 inet_down>=500 "
     "inet_up>=200 reliability>=0.99 rentable=true verification=verified gpu_display_active=false disk_space>=100"
 )
+CREATE_VISIBILITY_SECONDS = 60
+
 # Vast search syntax uses GB; raw RAM fields are reported in MB by the CLI.
 OFFER_MINIMUMS = {
     "gpu_ram": 24000, "gpu_max_power": 400, "compute_cap": 890,
@@ -118,10 +121,52 @@ def destroy_provisional(*, journal: Journal, attempt: dict, save: Callable[[], N
     raise Blocked(f"Removal of provisional instance {identity} unverified; no replacement rented")
 
 
-def reconcile_create(*, journal: Journal, attempt: dict, save: Callable[[], None]) -> dict:
-    matches = [record for record in instances(journal) if record.get("label") == attempt["label"]]
-    if len(matches) != 1:
-        raise Blocked(f"Create outcome unknown for {attempt['label']}; do not issue another create")
+def restore_create_result(*, journal: Journal, attempt: dict, directory: Path,
+                          save: Callable[[], None]) -> None:
+    path = directory / f"create-{attempt['label']}.json"
+    if not path.exists():
+        return  # Historical requests without receipts remain conservative.
+    result = json.loads(path.read_text())
+    if (result.get("version") != 1 or result.get("label") != attempt["label"]
+            or result.get("offer_id") != attempt["offer"]["id"]
+            or result.get("outcome") not in {"created", "rejected", "unknown"}):
+        raise Blocked(f"Create receipt identity/schema mismatch: {path}")
+    if attempt.get("create_result") == result:
+        return
+    if result["outcome"] == "created":
+        identity = result.get("instance_id")
+        if type(identity) is not int or identity <= 0:
+            raise Blocked(f"Invalid created instance identity: {path}")
+        if attempt.get("returned_instance_id", identity) != identity:
+            raise Blocked("Create receipt conflicts with saved instance identity")
+        attempt["returned_instance_id"] = identity
+    elif result["outcome"] == "rejected":
+        if attempt.get("returned_instance_id") or attempt.get("instance_id"):
+            raise Blocked("Rejection receipt conflicts with a saved instance identity")
+        attempt["create_rejected"] = True
+    attempt["create_result"] = result
+    save()
+    journal.event(kind="create_result_recorded", label=attempt["label"],
+                  outcome=result["outcome"], reason=result.get("reason"), diagnostic=str(path))
+
+
+def reconcile_create(*, journal: Journal, attempt: dict, save: Callable[[], None],
+                     wait_seconds: float = 0) -> dict:
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        matches = [record for record in instances(journal) if record.get("label") == attempt["label"]]
+        if len(matches) == 1:
+            break
+        if len(matches) > 1:
+            raise Blocked(f"Multiple instances match {attempt['label']}; refusing adoption or replacement")
+        if time.monotonic() >= deadline:
+            result = attempt.get("create_result", {})
+            detail = f"{result.get('reason', 'no durable response retained')}; HTTP {result.get('http_status', 'unknown')}"
+            raise Blocked(f"Create outcome unknown for {attempt['label']} ({detail}); "
+                          "do not issue another create. Resume only reconciles this label; "
+                          "persistent absence requires provider-confirmed rejection, not state editing")
+        journal.progress(text=f"Waiting for exact create label {attempt['label']} to become visible; no create retried")
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
     record = matches[0]
     expected = attempt.get("instance_id", attempt.get("returned_instance_id"))
     if expected not in (None, record["id"]):
@@ -178,24 +223,13 @@ def provision(*, journal: Journal, combo: dict, directory: Path,
                 active["preexisting_label"] = True
                 save()
                 raise Blocked("Instance label existed before create; refusing to rent or adopt it")
-            result = journal.run(args=["vastai", "create", "instance", str(offer["id"]),
-                                      "--image", IMAGE, "--disk", "100", "--ssh", "--direct",
-                                      "--label", active["label"], "--cancel-unavail", "--raw"],
+            result_path = directory / f"create-{active['label']}.json"
+            result = journal.run(args=[sys.executable, str(HELPERS / "create_request.py"),
+                                      "--offer-id", str(offer["id"]), "--label", active["label"],
+                                      "--result", str(result_path)],
                                  check=False, sensitive=True, timeout=120)
             journal.event(kind="create_returned", combo=combo["id"], exit_code=result.returncode)
-            try:
-                response = json.loads(result.stdout)
-                if isinstance(response, dict):
-                    identity = response.get("new_contract")
-                    if response.get("success") is True and type(identity) is int and identity > 0:
-                        active["returned_instance_id"] = identity
-                        save()
-                    elif response.get("success") is False and not identity:
-                        active["create_rejected"] = True
-                        save()
-            except ValueError:
-                pass  # Response loss/malformed output is not proof of rejection.
-            time.sleep(2)
+        restore_create_result(journal=journal, attempt=active, directory=directory, save=save)
         if active.get("preexisting_label"):
             raise Blocked("Recorded label predates this request; refusing automatic adoption")
         if active.get("create_rejected"):
@@ -210,7 +244,8 @@ def provision(*, journal: Journal, combo: dict, directory: Path,
             # interrupted. A valid API absence can finish this provisional step.
             destroy_provisional(journal=journal, attempt=active, save=save)
             continue
-        record = reconcile_create(journal=journal, attempt=active, save=save)
+        record = reconcile_create(journal=journal, attempt=active, save=save,
+                                  wait_seconds=CREATE_VISIBILITY_SECONDS)
         identity = active["instance_id"]
         run_dir = REPO / f".vast-train-local/toy-act-{identity}"
         run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
