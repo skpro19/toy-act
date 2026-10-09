@@ -6,6 +6,14 @@
 - refer `.opencode/rules/git.md` for git related instructions
 - for `.canvas.tsx` files, follow `.cursor/rules/canvas.mdc` (design template based on `cs231n-multi-head-attention.canvas.tsx`)
 
+## Pi Sub-agents
+- When the `subagent` tool is available, delegate autonomously when it improves efficiency; explicit user requests are not required.
+- Available user-level agents: `scout` for codebase exploration, `planner` for implementation plans, `worker` for implementation and tests, and `reviewer` for read-only code review.
+- Run independent exploration tasks in parallel. Use a planner for complex changes and a reviewer after substantial code changes; handle simple tasks directly.
+- Give each agent a self-contained task with relevant context, exact file paths, constraints, and expected output. Sub-agents do not inherit the conversation.
+- Sub-agents share the working directory: avoid concurrent edits to the same files, preserve existing changes, and verify delegated work before reporting completion.
+- If you are already executing a delegated sub-agent task, complete it directly rather than recursively delegating.
+
 ## GitHub README images
 - GitHub can continue showing an older image when a README image is overwritten at the same URL. When changing a displayed PNG or GIF, give the updated image a new descriptive filename and update its README reference and generating script together; remove the obsolete image if it is no longer used.
 - Before reporting an image update as live, verify the README reference and image blob on the pushed branch (which may not be the repository's default branch). Include the explicit branch URL when pointing someone to the result.
